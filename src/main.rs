@@ -1,11 +1,14 @@
 mod database {
+
     pub struct Database{
         //поля хранения таблиц, индексов, и т.д.
+        tables: Vec<Table>,
     }
     impl Database {
         pub fn new() -> Self {
-            Database { 
+            Database {
                 //init DB
+                tables: Vec::new(), 
             }
         }
         pub fn sql_execute(&mut self, query: &str) ->Result<(), String> {
@@ -15,7 +18,16 @@ mod database {
             // Обрабатываем ошибки и возвращаем результат
             Ok(())
         }
+        
     }
+    pub struct Table{
+        //TODO: как представить таблицу?
+    }
+    impl Table {
+        
+    }
+
+
 }
 fn main() {
     println!("Тестинг СУБД!");

@@ -33,3 +33,4 @@
 	2) Lender (кредитодатель)
 	3) procent (ставка)
 	4) Date_due
+
