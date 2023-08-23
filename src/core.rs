@@ -63,7 +63,7 @@ mod sql_execute_machine {
     use crate::core::core::Database;
     use crate::core::core::RDBMS_E;
 
-    pub fn sql_distribute(db: &mut Database, query: String){
+    pub fn sql_distribute(db: &mut Database, query: String){ //->Result<Database, RDBMS_E>
         let query_type = get_query_type(query);
         match query_type {
             // TODO: осталось-то всего лишь реализовать все это, ха!
