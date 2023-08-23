@@ -52,12 +52,18 @@ pub mod core {
         Integer(i64),
         Double(f64),
     }
+    pub struct RDBMS_E{
+        pub message: String,
+    }
 }
 
 mod sql_execute_machine {
 // механизм обработки SQL-запросов
+    use crate::core::core::Column;
     use crate::core::core::Database;
-    pub fn sql_distribute(db: &mut Database, query: &str){
+    use crate::core::core::RDBMS_E;
+
+    pub fn sql_distribute(db: &mut Database, query: String){
         let query_type = get_query_type(query);
         match query_type {
             // TODO: осталось-то всего лишь реализовать все это, ха!
@@ -72,7 +78,7 @@ mod sql_execute_machine {
         }
     }
 
-    fn get_query_type(query: &str) -> QueryType {
+    fn get_query_type(query: String) -> QueryType {
         match query {
             q if q.starts_with("SELECT") => QueryType::SELECT,
             q if q.starts_with("SHOW") => QueryType::SHOW,
@@ -82,6 +88,40 @@ mod sql_execute_machine {
             q if q.starts_with("INSERT") => QueryType::INSERT,
             _ => QueryType::ERROR
         }
+    }
+
+    fn create_distribute(arg: String, name: String, db: Option<Database>)->Result<Database, RDBMS_E>{
+        match arg {
+            a if a.starts_with("DBRAM")  => Ok(create_database(name)),
+            a if a.starts_with("TABLE") => {
+                //провереки на существование и нахождение в БД
+                match db {
+                    Some(d) => {
+                        let mut check: bool = false; //нахождение в БД: TODO()
+                        if (check){
+                            Ok(create_table(name, d))
+                        }
+                        else {
+                            Err(RDBMS_E{message: String::from("создание таблицы вне выбранной БД")})
+                        }
+                        
+                    },
+                    None => Err(RDBMS_E{message: String::from("создание таблицы без БД") })
+                }
+                
+            }
+            _ => Err(RDBMS_E{message: String::from("некорректный аргумент запроса")}) 
+        }
+    }
+
+    fn create_database(name: String)->Database {
+        return Database::new();
+    }
+
+    fn create_table(name: String, mut current_db: Database)->Database{
+        let mut fields: Vec<Column> = Vec::new();
+        current_db.new_table(name, fields);
+        return current_db;
     }
 
     enum QueryType {
