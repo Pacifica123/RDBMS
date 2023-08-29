@@ -1,5 +1,12 @@
 pub mod core {
     use crate::core::sql_execute_machine;
+    //use serde::Serialize;
+    use serde_json::json;
+    use serde_derive::Serialize;
+    use serde_derive::Deserialize;
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Serialize, Deserialize)]
     pub struct Database{
         //поля хранения таблиц, индексов, и т.д.
         pub tables: Vec<Table>,
@@ -25,6 +32,7 @@ pub mod core {
         }
         
     }
+    #[derive(Serialize, Deserialize)]
     pub struct Table{
         name: String,
         columns: Vec<Column>,
@@ -35,18 +43,22 @@ pub mod core {
             Table { name: (name), columns: fields, rows: Vec::new(), }
         }
     }
+    #[derive(Serialize, Deserialize)]
     pub struct Column{
         name: String,
         data_type: DataType,
     }
+    #[derive(Serialize, Deserialize)]
     pub struct Row{
         values: Vec<Value>,
     }
+    #[derive(Serialize, Deserialize)]
     pub enum DataType {
         Text,
         Integer,
         Double,
     }
+    #[derive(Serialize, Deserialize)]
     pub enum Value {
         Text(String),
         Integer(i64),
@@ -59,22 +71,62 @@ pub mod core {
 
 mod sql_execute_machine {
 // механизм обработки SQL-запросов
-    use crate::core::core::Column;
-    use crate::core::core::Database;
+    use crate::core::core::{Database, Column, Row, Table};
     use crate::core::core::RDBMS_E;
+    use serde_derive::Serialize;
+    use serde_derive::Deserialize;
+    use std::fs::{File, OpenOptions};
+    use std::fs::write;
+    use std::io::Write;
+    use serde_json::json;
+    use serde::Serialize;
 
-    pub fn sql_distribute(db: &mut Database, query: String){ //->Result<Database, RDBMS_E>
-        let query_type = get_query_type(query);
+    pub enum SqlResult{
+        DB(Database),
+        Rows(Vec<Row>),
+        Columns(Vec<Column>),
+        Table(Table),
+        Error(RDBMS_E)
+    }
+
+    pub fn sql_distribute(db: &mut Database, query: String) -> SqlResult{ 
+        let query_type = get_query_type(query.clone());
         match query_type {
             // TODO: осталось-то всего лишь реализовать все это, ха!
-            QueryType::CREATE => {}
-            QueryType::DELETE => {}
-            QueryType::DROP => {}
-            QueryType::INSERT => {}
-            QueryType::SELECT => {}
-            QueryType::SHOW => {}
-            QueryType::USE => {}
-            QueryType::ERROR => {/*ошибка распознования запроса*/}
+            QueryType::CREATE => {
+                let mut parts: Vec<&str> = query.split_terminator(" ") .collect::<Vec<&str>>();
+                if parts.len() > 3 || parts.len() < 2 {
+                    return SqlResult::Error(RDBMS_E { message: String::from("Некорректный CREATE запрос") })
+                }
+                if parts.len() == 2 {
+                    let res_default = create_distribute(String::from(parts[1]), String::from("defDBname"), Option::None);
+                    return res_default;
+                };
+                let res = create_distribute(String::from(parts[1]), String::from(parts[2]), Option::None); 
+                return res;
+            }
+            QueryType::DELETE => {
+                let mut parts: Vec<&str> = query.split_terminator(" ").collect::<Vec<&str>>();
+                if parts.len() != 2 { return SqlResult::Error(RDBMS_E { message: String::from("Некорректный DELETE запрос") });}
+
+                todo!()
+            }
+            QueryType::DROP => {
+                todo!()
+            }
+            QueryType::INSERT => {
+                todo!()
+            }
+            QueryType::SELECT => {
+                todo!()
+            }
+            QueryType::SHOW => {
+                todo!()
+            }
+            QueryType::USE => {
+                todo!()
+            }
+            QueryType::ERROR => { SqlResult::Error(RDBMS_E { message: String::from("Ошибка распознования запроса") })}
         }
     }
 
@@ -90,10 +142,10 @@ mod sql_execute_machine {
         }
     }
 
-    fn create_distribute(arg: String, name: String, db: Option<Database>)->Result<Database, RDBMS_E>{
+    fn create_distribute(arg: String, name: String, db: Option<Database>)->SqlResult{
         match arg {
-            a if a.starts_with("DBRAM")  => Ok(create_database(name)),
-            a if a.starts_with("TABLE") => {
+            a if a == "DBRAM"  => Ok(create_database(name)), // временная БД хранящаяся в ОЗУ которая сотрется с закрытием программы.
+            a if a == "TABLE" => {
                 //провереки на существование и нахождение в БД
                 match db {
                     Some(d) => {
@@ -110,6 +162,16 @@ mod sql_execute_machine {
                 }
                 
             }
+            a if a == "DB" => {
+                // создание полноценного файла БД
+                if (true) {
+                    // если создание файла прошло успешно
+                    Ok(create_database(name))
+                }
+                else {
+                    Err(RDBMS_E { message: String::from("Не удалось создать БД") })
+                }
+            }
             _ => Err(RDBMS_E{message: String::from("некорректный аргумент запроса")}) 
         }
     }
@@ -119,9 +181,35 @@ mod sql_execute_machine {
     }
 
     fn create_table(name: String, mut current_db: Database)->Database{
+        //TODO: не хватает обработки ошибок
         let mut fields: Vec<Column> = Vec::new();
         current_db.new_table(name, fields);
         return current_db;
+    }
+
+    fn create_db_file(db: &Database, name: String)->bool{
+        let file_path = format!("{}.dbonrs", name);
+        // создание файла
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&file_path) {
+            Ok(file) => file,
+            Err(_) => {
+                eprintln!("Файл {} уже существует", file_path);
+                return false;
+            }
+        };
+        // запись БД в файл (пока в формате json)
+        
+        let ser_db = serde_json::to_string_pretty(db).unwrap();
+        if let Err(err) = file.write_all(ser_db.as_bytes()){
+            eprintln!("Не удалось записать полностью файл");
+            return false;
+        }
+
+        true
+    }
+
+    fn delete_execute(){
+        todo!()
     }
 
     enum QueryType {
@@ -134,4 +222,6 @@ mod sql_execute_machine {
         INSERT,
         ERROR
     }
+
+
 }
