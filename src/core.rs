@@ -1,10 +1,10 @@
 pub mod core {
-    use crate::core::sql_execute_machine;
+    use crate::core::sql_execute_machine::sql_distribute;
     //use serde::Serialize;
-    use serde_json::json;
+    // use serde_json::json;
     use serde_derive::Serialize;
     use serde_derive::Deserialize;
-    use serde::{Serialize, Deserialize};
+    // use serde::{Serialize, Deserialize};
 
     #[derive(Serialize, Deserialize)]
     pub struct Database{
@@ -27,6 +27,7 @@ pub mod core {
             // Разбираем запрос, выявляем тип, параметры
             // выполняем в др. функциях соответственные операции
             // Обрабатываем ошибки и возвращаем результат
+            sql_distribute(self, String::from(query));
 
             Ok(())
         }
@@ -94,7 +95,7 @@ mod sql_execute_machine {
         match query_type {
             // TODO: осталось-то всего лишь реализовать все это, ха!
             QueryType::CREATE => {
-                let mut parts: Vec<&str> = query.split_terminator(" ") .collect::<Vec<&str>>();
+                let parts: Vec<&str> = query.split_terminator(" ") .collect::<Vec<&str>>();
                 if parts.len() > 3 || parts.len() < 2 {
                     return SqlResult::Error(RDBMS_E { message: String::from("Некорректный CREATE запрос") })
                 }
@@ -106,7 +107,7 @@ mod sql_execute_machine {
                 return res;
             }
             QueryType::DELETE => {
-                let mut parts: Vec<&str> = query.split_terminator(" ").collect::<Vec<&str>>();
+                let parts: Vec<&str> = query.split_terminator(" ").collect::<Vec<&str>>();
                 if parts.len() != 2 { return SqlResult::Error(RDBMS_E { message: String::from("Некорректный DELETE запрос") });}
 
                 todo!()
@@ -144,21 +145,21 @@ mod sql_execute_machine {
 
     fn create_distribute(arg: String, name: String, db: Option<Database>)->SqlResult{
         match arg {
-            a if a == "DBRAM"  => Ok(create_database(name)), // временная БД хранящаяся в ОЗУ которая сотрется с закрытием программы.
+            a if a == "DBRAM"  => create_database(name), // временная БД хранящаяся в ОЗУ которая сотрется с закрытием программы.
             a if a == "TABLE" => {
                 //провереки на существование и нахождение в БД
                 match db {
                     Some(d) => {
                         let mut check: bool = false; //нахождение в БД: TODO()
                         if (check){
-                            Ok(create_table(name, d))
+                            create_table(name, d)
                         }
                         else {
-                            Err(RDBMS_E{message: String::from("создание таблицы вне выбранной БД")})
+                            SqlResult::Error(RDBMS_E{message: String::from("создание таблицы вне выбранной БД")})
                         }
                         
                     },
-                    None => Err(RDBMS_E{message: String::from("создание таблицы без БД") })
+                    None => SqlResult::Error(RDBMS_E{message: String::from("создание таблицы без БД") })
                 }
                 
             }
@@ -166,25 +167,25 @@ mod sql_execute_machine {
                 // создание полноценного файла БД
                 if (true) {
                     // если создание файла прошло успешно
-                    Ok(create_database(name))
+                    create_database(name)
                 }
                 else {
-                    Err(RDBMS_E { message: String::from("Не удалось создать БД") })
+                    SqlResult::Error(RDBMS_E { message: String::from("Не удалось создать БД") })
                 }
             }
-            _ => Err(RDBMS_E{message: String::from("некорректный аргумент запроса")}) 
+            _ => SqlResult::Error(RDBMS_E{message: String::from("некорректный аргумент запроса")}) 
         }
     }
 
-    fn create_database(name: String)->Database {
-        return Database::new();
+    fn create_database(name: String)->SqlResult {
+        return SqlResult::DB(Database::new());
     }
 
-    fn create_table(name: String, mut current_db: Database)->Database{
+    fn create_table(name: String, mut current_db: Database)->SqlResult{
         //TODO: не хватает обработки ошибок
         let mut fields: Vec<Column> = Vec::new();
         current_db.new_table(name, fields);
-        return current_db;
+        return SqlResult::DB(current_db);
     }
 
     fn create_db_file(db: &Database, name: String)->bool{
