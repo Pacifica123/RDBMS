@@ -1,1 +1,8 @@
-/target
+/target/
+**/*.rs.bk
+*.db
+*.sqlite
+*.sqlite3
+*.dbonrs
+.env
+.env.*
