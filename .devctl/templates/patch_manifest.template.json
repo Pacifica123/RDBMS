@@ -1,0 +1,65 @@
+{
+  "formatVersion": 1,
+  "patchId": "YYYY-MM-DD-rdbms-short-slug",
+  "title": "Краткое название изменения",
+  "summary": "Что меняется и зачем.",
+  "kind": "development-step",
+  "createdAt": "YYYY-MM-DDT00:00:00Z",
+  "base": {
+    "branch": "master",
+    "expectedHead": null
+  },
+  "apply": {
+    "filesRoot": "files",
+    "delete": [
+      {
+        "path": "path/to/remove",
+        "recursive": false,
+        "required": false
+      }
+    ]
+  },
+  "checks": [
+    {
+      "name": "Rust workspace compiles",
+      "cwd": ".",
+      "command": "cargo check --workspace",
+      "requiredCommands": [
+        "cargo"
+      ],
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "Devctl manifest template follows project rules",
+      "cwd": ".",
+      "command": "python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json",
+      "requiredCommands": [
+        "python"
+      ],
+      "timeoutSeconds": 120
+    }
+  ],
+  "commit": {
+    "message": "scope: concise change summary"
+  },
+  "push": {
+    "remote": "origin",
+    "branch": "master"
+  },
+  "archive": {
+    "nameSlug": "short-slug",
+    "exclude": [
+      ".git/",
+      "target/",
+      "dist/",
+      "build/",
+      "coverage/",
+      "__pycache__/",
+      ".env",
+      ".env.*",
+      "*.sqlite",
+      "*.db",
+      "*.dbonrs"
+    ]
+  }
+}

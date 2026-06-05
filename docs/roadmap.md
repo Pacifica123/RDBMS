@@ -11,6 +11,16 @@ Roadmap построен так, чтобы прогресс измерялся 
 - есть документы architecture/format/WAL/recovery/roadmap;
 - `cargo check --workspace` проходит.
 
+## Milestone 0.1 — devctl workflow
+
+Готово, когда:
+
+- правила devctl-патчей описаны в `docs/development/devctl_patches.md`;
+- есть шаблон `.devctl/templates/patch_manifest.template.json`;
+- есть локальная проверка `tools/devctl/validate_patch_manifest.py`;
+- в документации зафиксированы нюансы: `apply.delete` как массив объектов и текущая ветка `master`;
+- каждый следующий патч содержит checks.
+
 ## Milestone 1 — page store
 
 Готово, когда:

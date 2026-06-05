@@ -33,6 +33,11 @@ docs/
   roadmap.md
   unsafe.md
   legacy/
+  development/
+.devctl/
+  templates/
+tools/devctl/
+  validate_patch_manifest.py
 ```
 
 ## Порядок разработки
@@ -56,11 +61,21 @@ SQL shell не является первым milestone. Первый milestone �
 7. `docs/extension_abi.md`
 8. `docs/unsafe.md`
 9. `docs/legacy/README.md`
+10. `docs/development/devctl_patches.md`
+
+## Процесс разработки
+
+Изменения в проект вносятся devctl-патчами. Базовые правила зафиксированы в `docs/development/devctl_patches.md`, шаблон manifest лежит в `.devctl/templates/patch_manifest.template.json`, локальная проверка — в `tools/devctl/validate_patch_manifest.py`.
+
+Текущая основная ветка для патчей: `master`. В `manifest.json` поля `base.branch` и `push.branch` должны указывать `master`, пока проект явно не переедет на другую ветку.
+
+`apply.delete` в manifest всегда записывается массивом объектов: `{ "path": "...", "required": false }`. Массив строк невалиден для нашего devctl-конвейера.
 
 ## Проверки
 
 ```bash
 cargo check --workspace
+python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json
 ```
 
-До появления настоящего storage-кода эта проверка подтверждает только целостность workspace-скелета. Она не доказывает корректность СУБД.
+До появления настоящего storage-кода `cargo check` подтверждает только целостность workspace-скелета. Она не доказывает корректность СУБД. Проверка devctl-шаблона ловит ошибки упаковки патчей до dry-run.
