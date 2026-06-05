@@ -6,7 +6,7 @@
 
 ## Текущее состояние
 
-Статус: architecture-first reboot.
+Статус: architecture-first reboot, первый storage-кирпич реализован в `rdbms_page`.
 
 Старый бакалаврский прототип был полезен как research spike: он нащупал слова `Database`, `Table`, `Column`, `Row`, `Value` и желание иметь SQL-facing API. Но он начинался со строкового SQL-диспетчера, JSON-снимков и in-memory `Vec<Table>`, поэтому не годится как фундамент storage/recovery/transaction architecture.
 
@@ -50,6 +50,13 @@ tools/devctl/
 
 SQL shell не является первым milestone. Первый milestone — создать файл, записать страницу, прочитать страницу, проверить checksum, переоткрыть файл и обнаружить повреждение.
 
+
+## Ближайший реализованный слой
+
+Первый практический слой — `crates/rdbms_page`. Он реализует slotted page фиксированного размера: header, slot directory, вставку variable-size record, чтение по `SlotId`, delete-marker, compaction и checksum validation.
+
+Это ещё не таблица и не SQL. Это физическая основа, на которой позже появятся heap table, WAL и recovery.
+
 ## Документы первого чтения
 
 1. `docs/architecture.md`
@@ -78,4 +85,4 @@ cargo check --workspace
 python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json
 ```
 
-До появления настоящего storage-кода `cargo check` подтверждает только целостность workspace-скелета. Она не доказывает корректность СУБД. Проверка devctl-шаблона ловит ошибки упаковки патчей до dry-run.
+Теперь `cargo test -p rdbms_page` проверяет первый реальный storage-инвариант: slotted page умеет вставлять, читать, удалять и уплотнять записи без смены live slot id, а checksum ловит повреждённые bytes. `cargo check --workspace` по-прежнему остаётся общей проверкой целостности workspace.

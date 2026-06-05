@@ -1,77 +1,101 @@
-# Physical format
+# FORMAT — физический формат RDBMS
 
-## 1. Назначение
+## Статус
 
-Physical format описывает байты на диске. Это контракт между версиями программы, recovery и диагностикой. Его нельзя заменить сериализацией Rust-структур.
+Документ описывает текущий экспериментальный формат страницы. Это не обещание вечной совместимости. До появления WAL/recovery формат можно менять, но каждое изменение должно быть явно отражено здесь и в тестах `rdbms_page`.
 
-## 2. Начальный формат файла
+## Базовая единица хранения
 
-MVP-файл должен иметь:
-
-```text
-file header page
-page size
-format version
-database id
-checksum mode
-root catalog pointer
-WAL/checkpoint pointer позднее
-```
-
-Пока это проектный документ, а не финальная спецификация.
-
-## 3. Page size
-
-Начальный размер страницы: 4096 байт.
-
-Причина: это простой старт для учебного проекта, хорошо сочетается с обычными файловыми системами и не требует ранней оптимизации.
-
-## 4. Page header sketch
+Минимальная единица физического хранения — страница фиксированного размера.
 
 ```text
-magic:        4 bytes
-format_ver:   2 bytes
-page_type:    2 bytes
-page_id:      8 bytes
-lsn:          8 bytes
-checksum:     4 bytes
-free_start:   2 bytes
-free_end:     2 bytes
-reserved:     ...
+PAGE_SIZE = 4096 bytes
+byte order = little-endian
+page_id = u64
+lsn = u64
+slot_id = u16
 ```
 
-Для разных типов страниц payload может отличаться, но header должен оставаться проверяемым.
+Сейчас реализован только in-memory page buffer в crate `rdbms_page`. VFS и файл базы будут подключаться следующим слоем.
 
-## 5. Slotted page sketch
-
-Heap/table page должна хранить записи через slot directory:
+## Layout страницы v1
 
 ```text
-[page header][slot directory ->] ... free space ... [<- cell payloads]
+[page header][slot directory → ... free space ... ← record bytes]
 ```
 
-Это позволяет перемещать payload внутри страницы без изменения внешнего `SlotId`.
-
-## 6. Record identity
-
-Логический адрес записи в heap MVP:
+Header занимает 34 байта:
 
 ```text
-RowId = PageId + SlotId
+offset  size  field
+0       4     magic = "RDBP"
+4       2     version = 1
+6       2     page_type
+8       8     page_id
+16      8     page_lsn
+24      2     free_start
+26      2     free_end
+28      2     slot_count
+30      4     checksum
 ```
 
-Индексы должны ссылаться на `RowId`, а не на позицию в `Vec<Row>`.
+`free_start` всегда равен `HEADER_SIZE + slot_count * SLOT_SIZE`. Это упрощает первый вариант: каталог слотов растёт только вправо, а payload-зона растёт слева от конца страницы.
 
-## 7. Checksum policy
+## Slot directory
 
-MVP должен уметь:
+Один slot занимает 6 байт:
 
-1. вычислить checksum страницы;
-2. записать страницу;
-3. прочитать страницу;
-4. обнаружить несовпадение checksum;
-5. вернуть typed corruption error.
+```text
+offset  size  field
+0       2     record_offset
+2       2     record_len
+4       2     flags
+```
 
-## 8. Версионирование
+Флаги:
 
-Любое изменение формата требует явного bump `format_ver` и описания миграционной политики. До стабильного формата миграции можно считать unsupported.
+```text
+0 = unused
+1 = live
+2 = dead
+```
+
+`row_id = (page_id, slot_id)` остаётся стабильным для живой записи даже после `compact()`: payload может быть переложен внутри страницы, но номер слота не меняется.
+
+## Операции страницы
+
+Реализовано:
+
+```text
+Page::new(page_id, page_type)
+Page::from_bytes(bytes)
+Page::insert_record(bytes) -> SlotId
+Page::read_record(slot_id) -> Option<&[u8]>
+Page::delete_record(slot_id) -> bool
+Page::compact()
+Page::validate()
+```
+
+`delete_record` не стирает payload немедленно. Он помечает slot как dead. `compact()` перепаковывает только живые записи и освобождает дырки.
+
+## Checksum
+
+Checksum пока простой: сумма байтов с wraparound. Поле checksum при расчёте считается нулевым.
+
+Это слабый алгоритм. Его назначение сейчас — зафиксировать саму границу проверки повреждений. Перед реальным recovery нужно заменить алгоритм на более сильный и явно описать совместимость формата.
+
+## Что ещё не является форматом БД
+
+Сейчас нет:
+
+```text
+file header page;
+segment layout;
+free-space map;
+record schema layout;
+WAL binding;
+checkpoint state;
+catalog bootstrap pages.
+```
+
+Следующий практический слой — VFS/page store: создать файл, записать страницу, прочитать страницу, проверить checksum после reopen и обнаружить повреждённую страницу.

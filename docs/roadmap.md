@@ -1,113 +1,165 @@
-# Roadmap
+# ROADMAP — порядок развития RDBMS
 
-Roadmap построен так, чтобы прогресс измерялся гарантиями, а не числом распознанных SQL-команд.
+## Принцип
 
-## Milestone 0 — repository reboot
+Проект развивается не от красивого SQL shell, а от проверяемого correctness-контура:
 
-Готово, когда:
+```text
+байты → страницы → VFS/page store → WAL → recovery → каталог → heap table → транзакция → индекс → SQL → расширения → переносимость
+```
 
-- старый код перенесён в `docs/legacy`;
-- корень стал Rust workspace;
-- есть документы architecture/format/WAL/recovery/roadmap;
-- `cargo check --workspace` проходит.
+## Stage 0 — architecture-first reboot
 
-## Milestone 0.1 — devctl workflow
+Статус: выполнено.
 
-Готово, когда:
+Сделано:
 
-- правила devctl-патчей описаны в `docs/development/devctl_patches.md`;
-- есть шаблон `.devctl/templates/patch_manifest.template.json`;
-- есть локальная проверка `tools/devctl/validate_patch_manifest.py`;
-- в документации зафиксированы нюансы: `apply.delete` как массив объектов и текущая ветка `master`;
-- каждый следующий патч содержит checks.
+```text
+workspace skeleton;
+architecture docs;
+legacy archive;
+devctl patch workflow;
+базовые newtype-id и error boundary.
+```
 
-## Milestone 1 — page store
+## Stage 1 — page primitives
 
-Готово, когда:
+Статус: текущий патч.
 
-- создаётся файл базы;
-- пишется страница 4096 байт;
-- страница читается обратно;
-- checksum проверяется;
-- повреждённая страница обнаруживается typed error;
-- тесты не зависят от SQL.
+Цель: получить первый настоящий кирпич storage engine — slotted page.
 
-## Milestone 2 — VFS + fault injection
+Сделано:
 
-Готово, когда:
+```text
+фиксированный PAGE_SIZE = 4096;
+page header v1;
+page type;
+slot directory;
+insert/read/delete variable-size record;
+compact без смены live slot id;
+checksum validation;
+unit tests на основные инварианты.
+```
 
-- storage использует VFS trait;
-- есть std implementation;
-- есть fault-injection implementation для тестов;
-- можно моделировать short write, lost write и sync error.
+Что это даёт:
 
-## Milestone 3 — WAL + recovery skeleton
+```text
+строка больше не является абстрактным Vec<Value>;
+появляется физический адрес row_id = (page_id, slot_id);
+можно строить heap table и индексы поверх стабильных slot id;
+можно проверять повреждение страницы до подключения WAL.
+```
 
-Готово, когда:
+## Stage 2 — VFS/page store
 
-- WAL records имеют LSN;
-- commit проходит через sync boundary;
-- recovery делает redo committed page changes;
-- repeated recovery идемпотентен;
-- crash tests покрывают основные точки сбоя.
+Следующий хороший патч.
 
-## Milestone 4 — catalog v0
+Нужно реализовать:
 
-Готово, когда:
+```text
+StdVfs поверх std::fs;
+read_at/write_at/sync_data;
+page file abstraction;
+create/open database file;
+write_page/read_page;
+reopen test;
+corrupt page detection after reopen.
+```
 
-- catalog хранится в страницах базы;
-- relation metadata переживает переоткрытие;
-- catalog changes проходят через WAL/recovery.
+Запрещено на этом этапе:
 
-## Milestone 5 — heap table v0
+```text
+SQL;
+индексы;
+плагины;
+server mode.
+```
 
-Готово, когда:
+## Stage 3 — WAL skeleton
 
-- есть slotted page для строк;
-- `RowId = PageId + SlotId`;
-- insert/read/delete marker работают без SQL;
-- property tests проверяют layout invariants.
+После page store.
 
-## Milestone 6 — transaction manager v0
+Нужно реализовать:
 
-Готово, когда:
+```text
+WAL record binary envelope;
+LSN allocator;
+writer/reader;
+commit marker;
+truncated WAL detection;
+redo hook для page image.
+```
 
-- есть tx id;
-- committed/uncommitted состояние различается;
-- MVP ограничен many readers + single writer;
-- rollback/abort имеет ясную модель хотя бы для поддержанных операций.
+## Stage 4 — recovery skeleton
 
-## Milestone 7 — SQL subset
+```text
+open database;
+scan WAL;
+redo committed page images;
+ignore uncommitted changes;
+idempotent recovery test.
+```
 
-Готово, когда:
+## Stage 5 — catalog and heap table v0
 
-- SQL parser не основан на `starts_with()`;
-- binder проверяет catalog;
-- executor возвращает typed `ExecResult`;
-- поддерживается малое подмножество: create table, insert, select by full scan.
+```text
+bootstrap catalog;
+relation_id → storage object;
+internal create_table API;
+insert row bytes;
+full scan;
+reopen schema test.
+```
 
-## Milestone 8 — B+Tree index
+## Stage 6 — transactions v0
 
-Готово, когда:
+```text
+TxId;
+autocommit;
+begin/commit/rollback;
+single writer + many readers;
+rollback uncommitted inserts.
+```
 
-- index pages имеют собственный формат;
-- index changes журналируются;
-- recovery сохраняет согласованность индекса и heap;
-- differential tests сравнивают SQL-подмножество с SQLite.
+## Stage 7 — SQL subset
 
-## Milestone 9 — extension v0
+SQL начинается только после storage/catalog/transaction skeleton.
 
-Готово, когда:
+```text
+parser adapter;
+binder;
+logical plan;
+SeqScan/Filter/Project;
+INSERT;
+SELECT;
+simple WHERE.
+```
 
-- есть versioned ABI descriptor;
-- есть безопасная host boundary;
-- panic не пересекает FFI boundary;
-- capability model документирован и проверяется.
+## Stage 8 — index v0
 
-## Milestone 10 — platform readiness
+```text
+B+Tree page format;
+insert/delete;
+equality scan;
+range scan;
+index verifier.
+```
 
-Готово, когда:
+## Stage 9 — extension v0
 
-- Linux/Windows/Android сборки описаны;
-- VFS sync semantics задокументированы по платформам;
-- CI хотя бы компилирует поддержанные targets.
+```text
+static scalar function registry;
+extension catalog metadata;
+ABI version check;
+Linux native plugin experiment;
+Android static registry path.
+```
+
+## Stage 10 — platform ports
+
+```text
+Windows path/fsync smoke;
+Android library build;
+JNI smoke;
+CI matrix.
+```
