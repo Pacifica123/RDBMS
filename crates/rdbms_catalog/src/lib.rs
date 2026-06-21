@@ -2,7 +2,9 @@
 //!
 //! Stage 5 keeps the API deliberately internal and byte-oriented. The catalog
 //! is stored in page 0 as one encoded record. Heap tables are ordinary slotted
-//! pages whose page ids are listed by the catalog storage object.
+//! pages whose page ids are listed by the catalog storage object. Stage 6 adds
+//! transaction-staging helpers used by `rdbms_tx`; those helpers still expose no
+//! SQL-facing schema model.
 
 use rdbms_core::{DbError, DbResult, PageId, RelationId, RowId, SlotId};
 use rdbms_page::{Page, PageType};
@@ -131,6 +133,11 @@ impl RelationInfo {
     pub fn heap_pages(&self) -> &[PageId] {
         self.storage.heap_pages()
     }
+
+    /// Return true when this relation is an ordinary heap table.
+    pub fn is_heap_table(&self) -> bool {
+        self.kind == RelationKind::Table
+    }
 }
 
 /// In-memory representation of the persistent catalog page.
@@ -179,11 +186,17 @@ impl Catalog {
         decode_catalog(bytes)
     }
 
-    /// Persist this catalog as a single record in page 0.
-    pub fn save<F: VfsFile>(&self, page_file: &mut PageFile<F>) -> DbResult<()> {
+    /// Build the catalog page image for transaction staging and direct writes.
+    pub fn to_page(&self) -> DbResult<Page> {
         let bytes = encode_catalog(self)?;
         let mut page = Page::new(CATALOG_PAGE_ID, PageType::Catalog);
         page.insert_record(&bytes)?;
+        Ok(page)
+    }
+
+    /// Persist this catalog as a single record in page 0.
+    pub fn save<F: VfsFile>(&self, page_file: &mut PageFile<F>) -> DbResult<()> {
+        let page = self.to_page()?;
         page_file.write_page(&page)
     }
 
@@ -204,7 +217,8 @@ impl Catalog {
         self.relations.iter().find(|relation| relation.name == name)
     }
 
-    fn create_table_metadata(
+    /// Add heap-table metadata and allocate its first heap page.
+    pub fn create_table_metadata(
         &mut self,
         name: impl Into<String>,
         columns: Vec<ColumnDef>,
@@ -237,7 +251,8 @@ impl Catalog {
         Ok(RelationId(relation_id))
     }
 
-    fn allocate_page_id(&mut self) -> DbResult<PageId> {
+    /// Allocate a fresh page id from catalog metadata.
+    pub fn allocate_page_id(&mut self) -> DbResult<PageId> {
         let page_id = self.next_page_id;
         self.next_page_id = self
             .next_page_id
@@ -246,7 +261,8 @@ impl Catalog {
         Ok(PageId(page_id))
     }
 
-    fn append_heap_page(&mut self, relation_id: RelationId, page_id: PageId) -> DbResult<()> {
+    /// Append a heap page to an existing heap-table storage object.
+    pub fn append_heap_page(&mut self, relation_id: RelationId, page_id: PageId) -> DbResult<()> {
         let relation = self
             .relations
             .iter_mut()
@@ -301,6 +317,12 @@ impl<F: VfsFile> CatalogStore<F> {
     /// Mutably borrow the page file.
     pub fn page_file_mut(&mut self) -> &mut PageFile<F> {
         &mut self.page_file
+    }
+
+    /// Replace the committed in-memory catalog snapshot after an external
+    /// transaction layer has durably installed its catalog page.
+    pub fn replace_catalog(&mut self, catalog: Catalog) {
+        self.catalog = catalog;
     }
 
     /// Create a heap table and persist its catalog entry.

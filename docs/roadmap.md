@@ -157,14 +157,32 @@ heap page extension when current pages are full.
 
 ## Stage 6 — transactions v0
 
-Следующий хороший патч.
+Статус: выполнено.
+
+Реализовано:
 
 ```text
-TxId;
-autocommit;
+rdbms_tx crate;
+TransactionalStore;
 begin/commit/rollback;
-single writer + many readers;
-rollback uncommitted inserts.
+autocommit helpers;
+single active writer на handle;
+transaction-local dirty page staging;
+WAL PageImage records before data file writes;
+rollback discards uncommitted create_table/insert_row;
+recovery test for committed catalog/heap pages from WAL.
+```
+
+Ограничения:
+
+```text
+нет MVCC;
+нет межпроцессного file lock;
+нет SQL BEGIN/COMMIT/ROLLBACK;
+нет transactional delete/update;
+нет persistent TxId allocator;
+нет checkpoint/WAL truncation;
+нет savepoints.
 ```
 
 ## Stage 7 — SQL subset

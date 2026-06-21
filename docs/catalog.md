@@ -93,11 +93,29 @@ type checking;
 NULL bitmap;
 free-space map;
 page allocator;
-transactional catalog changes;
-WAL protocol for create_table/insert_row;
-rollback;
+transactional direct CatalogStore writes;
+WAL protocol inside CatalogStore::create_table/insert_row;
+rollback inside direct CatalogStore API;
 indexes;
 system tables as normal queryable relations.
 ```
 
-Catalog changes сейчас durable только как обычные page writes. Полная crash-consistency будет доводиться вместе с transaction layer и WAL protocol.
+Direct `CatalogStore` changes сейчас durable только как обычные page writes. Для WAL-backed create/insert нужно использовать `rdbms_tx::TransactionalStore`.
+
+## 8. Связь с transactions v0
+
+Stage 6 не меняет catalog record v0 и heap page layout. Он добавляет staging path поверх уже существующего формата.
+
+Для этого `rdbms_catalog` отдаёт несколько низкоуровневых helpers слою `rdbms_tx`:
+
+```text
+Catalog::to_page();
+Catalog::create_table_metadata();
+Catalog::allocate_page_id();
+Catalog::append_heap_page();
+CatalogStore::replace_catalog().
+```
+
+Эти функции нужны не SQL-слою, а transaction manager-у. Он должен уметь собрать новый catalog page image в памяти, записать его в WAL как `PageImage`, а затем установить в data file только после durable commit marker.
+
+Обычные Stage 5 методы `CatalogStore::create_table` и `CatalogStore::insert_row` сохранены для низкоуровневых тестов и прямого storage-доступа. Новый код, которому нужна transaction boundary, должен использовать `rdbms_tx::TransactionalStore`.

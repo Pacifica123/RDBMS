@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`. VFS/page store записывает и читает страницы через random-access файл.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`, transaction commit ordering v0 в crate `rdbms_tx`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -212,7 +212,34 @@ WAL file header;
 page_lsn update API;
 checkpoint state;
 recovery checkpoint position;
-transactional catalog changes.
+typed record encoding.
 ```
 
-Следующий практический слой — transactions v0 поверх catalog/heap skeleton.
+Следующий практический слой — SQL subset поверх transaction/catalog/heap skeleton.
+
+## Transaction behavior v0
+
+Stage 6 не добавляет новый on-disk record layout. Он использует существующие:
+
+```text
+database file v0;
+page format v1;
+WAL record v0;
+catalog page v0;
+heap table v0.
+```
+
+Transaction commit v0 — это порядок записи, а не новый физический формат:
+
+```text
+BeginTx(tx_id)
+PageImage(tx_id, catalog/heap page)
+...
+CommitTx(tx_id)
+```
+
+После sync WAL dirty pages записываются в database file. Recovery v0 уже умеет применить эти committed `PageImage` records.
+
+Rollback v0 использует no-steal staging: uncommitted pages не пишутся в database file. Поэтому physical undo format пока не нужен.
+
+Rollback v0 uses no-steal staging: staged pages are dropped before they ever become database-file bytes.

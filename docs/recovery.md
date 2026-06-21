@@ -69,11 +69,12 @@ checkpoint state;
 recovery start position;
 page_lsn-based skip;
 WAL truncation после checkpoint;
-commit protocol между WAL sync и data page flush;
 fault-injection VFS;
 file header bootstrap;
-transactional catalog changes.
+MVCC snapshots.
 ```
+
+Stage 6 добавляет первый commit protocol для `rdbms_tx`: dirty catalog/heap pages сначала пишутся в WAL как full-page images, затем пишется `CommitTx`, затем sync WAL, и только после этого dirty pages попадают в data file. Это закрывает минимальный crash window для операций, прошедших через `TransactionalStore`, но не является полноценным ARIES.
 
 `page_lsn` уже есть в page header, но Stage 4 не обновляет и не использует его для пропуска redo. Это отдельный шаг после стабилизации commit protocol.
 
@@ -87,6 +88,17 @@ Stage 4 пока проверяет только обычный reopen/recovery 
 
 Полноценный undo/MVCC отложены. Но уже сейчас WAL records имеют `TxId`, commit marker и page image redo path, чтобы будущий transaction layer не приклеивался поверх storage вслепую.
 
-## 8. Связь с catalog/heap v0
+## 8. Связь с catalog/heap v0 и transactions v0
 
-Stage 5 хранит catalog page и heap pages как обычные `rdbms_page::Page` в database file. Recovery v0 может переписать такие страницы только если будущий слой уже записал соответствующие committed `PageImage` records в WAL. Сам Stage 5 пока не добавляет WAL protocol для `create_table` и `insert_row`.
+Stage 5 хранит catalog page и heap pages как обычные `rdbms_page::Page` в database file.
+
+Stage 6 делает это recoverable для операций, выполненных через `rdbms_tx::TransactionalStore`:
+
+```text
+create_table / insert_row меняют staged pages в памяти;
+commit пишет staged pages в WAL как committed PageImage records;
+recovery применяет эти PageImage records к data file;
+CatalogStore::open после recovery видит committed catalog и heap rows.
+```
+
+Прямые вызовы `CatalogStore::create_table` и `CatalogStore::insert_row` остаются низкоуровневыми и не добавляют WAL protocol сами по себе.

@@ -1,9 +1,9 @@
 //! Write-ahead log skeleton.
 //!
 //! This crate owns the first binary WAL envelope and a minimal append/scan
-//! path. It deliberately stops before full recovery: Stage 3 can record page
-//! images and expose a redo hook, while Stage 4 will decide when and how to
-//! apply committed records during database open.
+//! path. It deliberately stays below recovery and transactions: this crate can
+//! record page images and expose a redo hook, while higher layers decide when
+//! to apply committed records and when to write data pages.
 
 use rdbms_core::{DbError, DbResult, Lsn, PageId, TxId};
 use rdbms_page::{Page, PAGE_SIZE};

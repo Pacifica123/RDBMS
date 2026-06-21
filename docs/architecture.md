@@ -42,11 +42,15 @@ SQL остаётся пользовательским интерфейсом, н
 
 ### rdbms_recovery
 
-Минимальный recovery loop. Слой открывает data file и WAL file через VFS, сканирует WAL, применяет только committed full-page images к `PageFile`, игнорирует uncommitted page images и возвращает recovered page-file handle. На текущем этапе это redo-only skeleton без undo, checkpoint state и commit protocol.
+Минимальный recovery loop. Слой открывает data file и WAL file через VFS, сканирует WAL, применяет только committed full-page images к `PageFile`, игнорирует uncommitted page images и возвращает recovered page-file handle. На текущем этапе это redo-only skeleton без undo и checkpoint state; commit ordering для catalog/heap операций живёт выше, в `rdbms_tx`.
 
 ### rdbms_catalog
 
-Persistent catalog и heap table v0. Текущий слой резервирует page 0 под catalog record, хранит `RelationId -> StorageObject::Heap { pages }`, умеет bootstrap catalog, internal `create_table`, raw `insert_row` и `full_scan`. Каталог уже живёт в storage, но transactional catalog changes, SQL binder и WAL commit protocol ещё не реализованы.
+Persistent catalog и heap table v0. Текущий слой резервирует page 0 под catalog record, хранит `RelationId -> StorageObject::Heap { pages }`, умеет bootstrap catalog, internal `create_table`, raw `insert_row` и `full_scan`. Для Stage 6 каталог также отдаёт transaction-staging helpers: построить catalog page image, выделить page id и обновить heap storage metadata без немедленной записи в data file.
+
+### rdbms_tx
+
+Transactions v0. Слой владеет `CatalogStore` и `WalWriter`, даёт `begin/commit/rollback`, autocommit helpers и один active writer на handle. Dirty catalog/heap pages сначала живут в memory staging map. Commit пишет `PageImage` records в WAL, затем `CommitTx`, затем sync WAL, и только после этого пишет dirty pages в data file. Rollback отбрасывает staged pages без physical undo.
 
 ### rdbms_sql
 
@@ -66,9 +70,10 @@ Persistent catalog и heap table v0. Текущий слой резервиру�
 2. WAL record имеет LSN и достаточную информацию для recovery-сценария своего milestone.
 3. Commit не считается durable, пока нужные данные не прошли через требуемую sync-границу.
 4. Catalog changes восстанавливаются тем же механизмом, что и пользовательские данные.
-5. SQL-ошибка не должна превращаться в corruption или internal invariant violation.
-6. Расширение не может нарушить память ядра через нестабильный Rust ABI.
-7. Android/Linux/Windows различия изолируются за VFS и feature-флагами.
+5. Transaction v0 не пишет dirty pages в data file до durable WAL commit marker.
+6. SQL-ошибка не должна превращаться в corruption или internal invariant violation.
+7. Расширение не может нарушить память ядра через нестабильный Rust ABI.
+8. Android/Linux/Windows различия изолируются за VFS и feature-флагами.
 
 ## 5. Public API sketch
 

@@ -67,7 +67,7 @@ LsnAllocator
 
 Для корректного сканирования WAL в `VfsFile` есть `len()`. Без длины файла нельзя отличить clean EOF на границе record от обрезанного suffix.
 
-`WalWriter::append` назначает LSN, кодирует record, пишет bytes по offset `lsn.0`. `WalWriter::sync_data` даёт sync boundary для будущего commit protocol. Stage 3 только предоставляет эту границу; полноценное правило “commit durable после WAL sync” будет собрано в transaction/recovery слое.
+`WalWriter::append` назначает LSN, кодирует record, пишет bytes по offset `lsn.0`. `WalWriter::sync_data` даёт sync boundary. Stage 6 использует эту boundary в `rdbms_tx`: commit marker становится durable до записи dirty data pages.
 
 ## 7. Redo hook
 
@@ -90,7 +90,6 @@ Hook replay-ит только page images транзакций, у которы�
 WAL file header;
 checkpoint state;
 page_lsn update API;
-commit protocol между WAL и data file;
 fault-injection VFS;
 recovery checkpoint position.
 ```
@@ -107,10 +106,37 @@ truncated WAL suffix detection;
 redo hook replays only committed page images.
 ```
 
-Следующие recovery milestones после Stage 4 должны добавить crash tests:
+Следующие recovery/transaction milestones должны добавить fault-injection crash tests:
 
 1. сбой до записи WAL;
 2. сбой после WAL до data page;
 3. сбой после частичной data page;
 4. сбой после commit;
 5. повторный recovery должен быть идемпотентным.
+
+## 10. Связь с transactions v0
+
+Stage 6 использует WAL v0 без изменения record format.
+
+Для committed transaction path `rdbms_tx` пишет:
+
+```text
+BeginTx(tx_id);
+PageImage(tx_id, dirty catalog/heap page);
+...
+CommitTx(tx_id);
+sync WAL;
+write dirty pages to data file;
+sync data file.
+```
+
+Для rollback path:
+
+```text
+BeginTx(tx_id);
+AbortTx(tx_id);
+sync WAL;
+drop staged dirty pages.
+```
+
+Uncommitted staged pages не попадают в data file. Поэтому Stage 6 не требует undo WAL records.

@@ -52,6 +52,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdbms_tx"
+version = "0.1.0"
+dependencies = [
+ "rdbms_catalog",
+ "rdbms_core",
+ "rdbms_page",
+ "rdbms_recovery",
+ "rdbms_vfs",
+ "rdbms_wal",
+]
+
+[[package]]
 name = "rdbms_vfs"
 version = "0.1.0"
 dependencies = [
