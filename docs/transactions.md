@@ -174,3 +174,21 @@ SELECT -> committed full_scan.
 ```
 
 SQL-level `BEGIN`, `COMMIT` и `ROLLBACK` пока не реализованы. Поэтому каждое SQL write statement в Stage 7 является отдельной autocommit transaction.
+
+## Stage 8 — index pages in transactions
+
+B+Tree pages are staged exactly like heap and catalog pages.
+
+```text
+begin transaction
+  create/modify index pages in dirty page map
+  update catalog root page when root split happens
+commit
+  WAL PageImage records for dirty catalog/heap/index pages
+  CommitTx
+  WAL sync
+  data writes
+  data sync
+```
+
+Rollback discards staged index pages. There is still no MVCC, no delete maintenance and no index visibility map.

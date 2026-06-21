@@ -102,3 +102,15 @@ CatalogStore::open после recovery видит committed catalog и heap rows
 ```
 
 Прямые вызовы `CatalogStore::create_table` и `CatalogStore::insert_row` остаются низкоуровневыми и не добавляют WAL protocol сами по себе.
+
+## Stage 8 — recovery of index pages
+
+Recovery does not need a special index algorithm yet. Index pages are restored through the same committed WAL `PageImage` redo path as catalog and heap pages.
+
+```text
+PageType::Catalog -> redo full page image
+PageType::Heap    -> redo full page image
+PageType::Index   -> redo full page image
+```
+
+There is still no logical index rebuild during recovery.

@@ -8,6 +8,7 @@ members = [
   "crates/rdbms_recovery",
   "crates/rdbms_catalog",
   "crates/rdbms_tx",
+  "crates/rdbms_index",
   "crates/rdbms_sql",
   "crates/rdbms_ext_abi",
   "crates/rdbms_cli",

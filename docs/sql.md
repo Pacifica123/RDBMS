@@ -196,3 +196,28 @@ WHERE column = literal
 ```
 
 Без boolean expressions, comparison operators, indexes и NULL-semantics уровня SQL standard.
+
+## Stage 8 — CREATE INDEX
+
+Supported syntax:
+
+```sql
+CREATE INDEX index_name ON table_name(column_name);
+```
+
+Supported indexable column types:
+
+```text
+INT / INTEGER
+TEXT
+```
+
+`DOUBLE`, `REAL`, `FLOAT` and composite keys are intentionally not indexable in Stage 8.
+
+When a table has an index on the column used by a simple equality predicate, the executor asks `rdbms_tx` for an index lookup:
+
+```sql
+SELECT name FROM users WHERE id = 1;
+```
+
+The executor still validates the row through the normal heap row decode path and applies the predicate again. This keeps the result path simple and correct.

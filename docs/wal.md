@@ -140,3 +140,13 @@ drop staged dirty pages.
 ```
 
 Uncommitted staged pages не попадают в data file. Поэтому Stage 6 не требует undo WAL records.
+
+## Stage 8 — index page images
+
+B+Tree pages are logged as normal `PageImage` records. The WAL layer does not inspect B+Tree node contents.
+
+```text
+WalRecordKind::PageImage { page_type = Index, page bytes = full 4096-byte image }
+```
+
+This keeps WAL v0 simple: recovery replays committed physical page images for catalog, heap and index pages alike.

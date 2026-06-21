@@ -89,3 +89,16 @@ python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.
 ```
 
 Теперь `cargo test -p rdbms_sql` проверяет SQL subset: parse, SQL row encoding, CREATE/INSERT/SELECT и простой WHERE. `cargo check --workspace` по-прежнему остаётся общей проверкой целостности workspace.
+
+## Current storage capability after Stage 8
+
+The project now has a small SQL path with persistent heap tables and equality indexes:
+
+```sql
+CREATE TABLE users (id INT, name TEXT);
+CREATE INDEX users_id_idx ON users(id);
+INSERT INTO users VALUES (1, 'Ada');
+SELECT name FROM users WHERE id = 1;
+```
+
+This is still not a full SQL database. The index supports equality lookup for `INT` and `TEXT` keys only.

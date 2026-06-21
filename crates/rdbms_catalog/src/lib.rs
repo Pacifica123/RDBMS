@@ -17,6 +17,7 @@ pub const CATALOG_PAGE_ID: PageId = PageId(0);
 const CATALOG_MAGIC: &[u8; 4] = b"RDBC";
 const CATALOG_VERSION: u16 = 1;
 const STORAGE_HEAP: u8 = 1;
+const STORAGE_INDEX: u8 = 2;
 
 /// Relation kind stored in the catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,11 +92,56 @@ impl HeapStorage {
     }
 }
 
+/// B+Tree index storage metadata for one index relation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexStorage {
+    table_id: RelationId,
+    column_name: String,
+    root_page_id: PageId,
+}
+
+impl IndexStorage {
+    /// Create index storage metadata.
+    pub fn new(
+        table_id: RelationId,
+        column_name: impl Into<String>,
+        root_page_id: PageId,
+    ) -> Self {
+        Self {
+            table_id,
+            column_name: column_name.into(),
+            root_page_id,
+        }
+    }
+
+    /// Heap table indexed by this index relation.
+    pub fn table_id(&self) -> RelationId {
+        self.table_id
+    }
+
+    /// Indexed column name.
+    pub fn column_name(&self) -> &str {
+        &self.column_name
+    }
+
+    /// Root page of the B+Tree.
+    pub fn root_page_id(&self) -> PageId {
+        self.root_page_id
+    }
+
+    /// Update root page after a root split.
+    pub fn set_root_page_id(&mut self, root_page_id: PageId) {
+        self.root_page_id = root_page_id;
+    }
+}
+
 /// Physical storage object referenced by a catalog relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageObject {
     /// Heap table storage.
     Heap(HeapStorage),
+    /// B+Tree index storage.
+    BPlusTree(IndexStorage),
 }
 
 impl StorageObject {
@@ -103,12 +149,30 @@ impl StorageObject {
     pub fn heap_pages(&self) -> &[PageId] {
         match self {
             Self::Heap(storage) => storage.pages(),
+            Self::BPlusTree(_) => &[],
         }
     }
 
-    fn heap_storage_mut(&mut self) -> &mut HeapStorage {
+    /// Return index storage when this storage object is a B+Tree.
+    pub fn index_storage(&self) -> Option<&IndexStorage> {
         match self {
-            Self::Heap(storage) => storage,
+            Self::Heap(_) => None,
+            Self::BPlusTree(storage) => Some(storage),
+        }
+    }
+
+    /// Mutably return index storage when this storage object is a B+Tree.
+    pub fn index_storage_mut(&mut self) -> Option<&mut IndexStorage> {
+        match self {
+            Self::Heap(_) => None,
+            Self::BPlusTree(storage) => Some(storage),
+        }
+    }
+
+    fn heap_storage_mut(&mut self) -> Option<&mut HeapStorage> {
+        match self {
+            Self::Heap(storage) => Some(storage),
+            Self::BPlusTree(_) => None,
         }
     }
 }
@@ -137,6 +201,11 @@ impl RelationInfo {
     /// Return true when this relation is an ordinary heap table.
     pub fn is_heap_table(&self) -> bool {
         self.kind == RelationKind::Table
+    }
+
+    /// Return B+Tree index metadata when this relation is an index.
+    pub fn index_storage(&self) -> Option<&IndexStorage> {
+        self.storage.index_storage()
     }
 }
 
@@ -277,7 +346,111 @@ impl Catalog {
                 relation_id.0
             )));
         }
-        relation.storage.heap_storage_mut().push_page(page_id);
+        relation
+            .storage
+            .heap_storage_mut()
+            .ok_or(DbError::InternalInvariant("table relation without heap storage"))?
+            .push_page(page_id);
+        Ok(())
+    }
+
+    /// Add B+Tree index metadata and allocate its initial root page.
+    pub fn create_index_metadata(
+        &mut self,
+        name: impl Into<String>,
+        table_id: RelationId,
+        column_name: impl Into<String>,
+    ) -> DbResult<(RelationId, PageId)> {
+        let name = name.into();
+        let column_name = column_name.into();
+        validate_name("index", &name)?;
+        validate_name("column", &column_name)?;
+
+        if self.relation_by_name(&name).is_some() {
+            return Err(DbError::User(format!("relation already exists: {name}")));
+        }
+
+        let table = self.relation_by_id(table_id).ok_or(DbError::User(format!(
+            "unknown table relation id: {}",
+            table_id.0
+        )))?;
+        if !table.is_heap_table() {
+            return Err(DbError::User(format!(
+                "indexed relation is not a heap table: {}",
+                table_id.0
+            )));
+        }
+        if table.columns.iter().all(|column| column.name != column_name) {
+            return Err(DbError::User(format!(
+                "unknown indexed column '{}' on relation '{}'",
+                column_name, table.name
+            )));
+        }
+        if self
+            .indexes_on_table(table_id)
+            .iter()
+            .any(|relation| relation.index_storage().is_some_and(|storage| storage.column_name() == column_name.as_str()))
+        {
+            return Err(DbError::User(format!(
+                "index already exists on relation {} column {}",
+                table_id.0, column_name
+            )));
+        }
+
+        let relation_id = self.allocate_relation_id()?;
+        let root_page_id = self.allocate_page_id()?;
+        self.relations.push(RelationInfo {
+            id: relation_id,
+            name,
+            kind: RelationKind::Index,
+            storage: StorageObject::BPlusTree(IndexStorage::new(
+                table_id,
+                column_name.clone(),
+                root_page_id,
+            )),
+            columns: vec![ColumnDef::new(column_name, "INDEX_KEY")],
+        });
+        Ok((relation_id, root_page_id))
+    }
+
+    /// Return indexes that belong to a heap table.
+    pub fn indexes_on_table(&self, table_id: RelationId) -> Vec<&RelationInfo> {
+        self.relations
+            .iter()
+            .filter(|relation| {
+                relation.kind == RelationKind::Index
+                    && relation
+                        .index_storage()
+                        .is_some_and(|storage| storage.table_id() == table_id)
+            })
+            .collect()
+    }
+
+    /// Update an index root page after the B+Tree root splits.
+    pub fn set_index_root_page(
+        &mut self,
+        index_relation_id: RelationId,
+        root_page_id: PageId,
+    ) -> DbResult<()> {
+        let relation = self
+            .relations
+            .iter_mut()
+            .find(|relation| relation.id == index_relation_id)
+            .ok_or(DbError::User(format!(
+                "unknown index relation id: {}",
+                index_relation_id.0
+            )))?;
+        if relation.kind != RelationKind::Index {
+            return Err(DbError::User(format!(
+                "relation is not an index: {}",
+                index_relation_id.0
+            )));
+        }
+        relation
+            .storage
+            .index_storage_mut()
+            .ok_or(DbError::InternalInvariant("index relation without index storage"))?
+            .set_root_page_id(root_page_id);
         Ok(())
     }
 }
@@ -396,6 +569,31 @@ impl<F: VfsFile> CatalogStore<F> {
         Ok(rows)
     }
 
+    /// Read one heap row by physical row id after checking relation ownership.
+    pub fn read_row(&self, relation_id: RelationId, row_id: RowId) -> DbResult<Option<HeapRow>> {
+        self.ensure_heap_relation(relation_id)?;
+        if !self.heap_pages(relation_id)?.contains(&row_id.page_id) {
+            return Err(DbError::User(format!(
+                "row page {} does not belong to relation {}",
+                row_id.page_id.0, relation_id.0
+            )));
+        }
+
+        let page = self.page_file.read_page(row_id.page_id)?;
+        let header = page.header()?;
+        if header.page_type != PageType::Heap {
+            return Err(DbError::Corruption(format!(
+                "relation page is not a heap page: {}",
+                row_id.page_id.0
+            )));
+        }
+
+        Ok(page.read_record(row_id.slot_id)?.map(|bytes| HeapRow {
+            row_id,
+            bytes: bytes.to_vec(),
+        }))
+    }
+
     /// Persist current page-file contents through the VFS boundary.
     pub fn sync_data(&mut self) -> DbResult<()> {
         self.page_file.sync_data()
@@ -500,6 +698,12 @@ fn encode_storage_object(bytes: &mut Vec<u8>, storage: &StorageObject) -> DbResu
                 write_u64(bytes, page_id.0);
             }
         }
+        StorageObject::BPlusTree(index) => {
+            bytes.push(STORAGE_INDEX);
+            write_u64(bytes, index.table_id().0);
+            write_u64(bytes, index.root_page_id().0);
+            write_string(bytes, index.column_name())?;
+        }
     }
     Ok(())
 }
@@ -574,6 +778,16 @@ fn decode_storage_object(cursor: &mut DecodeCursor<'_>) -> DbResult<StorageObjec
                 ));
             }
             Ok(StorageObject::Heap(HeapStorage::new(pages)))
+        }
+        STORAGE_INDEX => {
+            let table_id = RelationId(cursor.read_u64()?);
+            let root_page_id = PageId(cursor.read_u64()?);
+            let column_name = cursor.read_string()?;
+            Ok(StorageObject::BPlusTree(IndexStorage::new(
+                table_id,
+                column_name,
+                root_page_id,
+            )))
         }
         _ => Err(DbError::Corruption(format!(
             "unknown catalog storage object kind: {storage_kind}"
@@ -758,6 +972,32 @@ mod tests {
             .ok_or(DbError::InternalInvariant("relation disappeared"))?;
         assert_eq!(rows.len(), 8);
         assert!(relation.heap_pages().len() > 1);
+
+        cleanup_temp_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn creates_index_metadata() -> DbResult<()> {
+        let path = temp_db_path("index_metadata");
+        let vfs = StdVfs::new();
+        let mut store = open_catalog_store(&vfs, &path)?;
+        let table_id = store.create_table("users", vec![ColumnDef::new("id", "INT")])?;
+        let (index_id, root_page_id) = store
+            .catalog
+            .create_index_metadata("users_id_idx", table_id, "id")?;
+
+        assert!(root_page_id.0 > 0);
+        let index = store
+            .catalog
+            .relation_by_id(index_id)
+            .ok_or(DbError::InternalInvariant("index metadata disappeared"))?;
+        let storage = index
+            .index_storage()
+            .ok_or(DbError::InternalInvariant("missing index storage"))?;
+        assert_eq!(storage.table_id(), table_id);
+        assert_eq!(storage.column_name(), "id");
+        assert_eq!(storage.root_page_id(), root_page_id);
 
         cleanup_temp_file(path);
         Ok(())

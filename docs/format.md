@@ -267,3 +267,45 @@ CommitTx(tx_id)
 Rollback v0 использует no-steal staging: uncommitted pages не пишутся в database file. Поэтому physical undo format пока не нужен.
 
 Rollback v0 uses no-steal staging: staged pages are dropped before they ever become database-file bytes.
+
+## Index node page v0
+
+Stage 8 adds `PageType::Index`.
+
+Index pages are normal slotted pages. Slot 0 stores one encoded B+Tree node record.
+
+```text
+magic       4 bytes   "RDBI"
+version     u16       1
+node_kind   u8        1 = leaf, 2 = internal
+```
+
+Leaf payload:
+
+```text
+has_next    u8
+next_page   u64
+entry_count u16
+entries:
+  key
+  row_page  u64
+  row_slot  u16
+```
+
+Internal payload:
+
+```text
+key_count   u16
+keys        repeated encoded keys
+child_count u16
+children    repeated u64 page ids
+```
+
+Supported key encodings:
+
+```text
+1 = i64 integer key
+2 = UTF-8 text key
+```
+
+The format is versioned separately from the page header. Stage 8 does not define range-scan cursors, delete records or uniqueness metadata.

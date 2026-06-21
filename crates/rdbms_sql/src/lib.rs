@@ -1,4 +1,4 @@
-//! Minimal SQL subset for the Stage 7 storage stack.
+//! Minimal SQL subset for the Stage 8 storage stack.
 //!
 //! This crate intentionally implements a very small SQL-facing layer over
 //! `rdbms_tx::TransactionalStore`. It is not a full SQL parser, binder or
@@ -7,12 +7,14 @@
 //! ```text
 //! CREATE TABLE name (column TYPE, ...)
 //! INSERT INTO name VALUES (literal, ...)
+//! CREATE INDEX name ON table(column)
 //! SELECT * FROM name [WHERE column = literal]
 //! SELECT column, ... FROM name [WHERE column = literal]
 //! ```
 
 use rdbms_catalog::{ColumnDef, RelationInfo};
 use rdbms_core::{ColumnInfo, DbError, DbResult, ExecResult, Value};
+use rdbms_index::IndexKey;
 use rdbms_tx::TransactionalStore;
 use rdbms_vfs::VfsFile;
 
@@ -23,7 +25,7 @@ const TAG_INTEGER: u8 = 1;
 const TAG_TEXT: u8 = 2;
 const TAG_DOUBLE: u8 = 3;
 
-/// Parsed statement for the Stage 7 SQL subset.
+/// Parsed statement for the Stage 8 SQL subset.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statement {
     /// `CREATE TABLE name (column TYPE, ...)`.
@@ -39,6 +41,15 @@ pub enum Statement {
         table: String,
         /// Literal values in table-column order.
         values: Vec<Value>,
+    },
+    /// `CREATE INDEX name ON table(column)`.
+    CreateIndex {
+        /// Index relation name.
+        name: String,
+        /// Indexed table name.
+        table: String,
+        /// Indexed column name.
+        column: String,
     },
     /// `SELECT ... FROM name [WHERE column = literal]`.
     Select {
@@ -60,7 +71,7 @@ pub enum Projection {
     Columns(Vec<String>),
 }
 
-/// Equality predicate supported by Stage 7.
+/// Equality predicate supported by Stage 8.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Selection {
     /// Predicate column.
@@ -88,7 +99,7 @@ pub fn execute<F: VfsFile>(
 ) -> DbResult<ExecResult> {
     if !params.is_empty() {
         return Err(DbError::User(
-            "SQL parameters are not supported in Stage 7".to_string(),
+            "SQL parameters are not supported in Stage 8".to_string(),
         ));
     }
 
@@ -98,6 +109,9 @@ pub fn execute<F: VfsFile>(
             Ok(ExecResult::StatementComplete { rows_affected: 0 })
         }
         Statement::Insert { table, values } => execute_insert(store, &table, values),
+        Statement::CreateIndex { name, table, column } => {
+            execute_create_index(store, &name, &table, &column)
+        }
         Statement::Select {
             projection,
             table,
@@ -138,7 +152,7 @@ impl<F: VfsFile> SqlSession<F> {
     }
 }
 
-/// Encode SQL values into heap row bytes used by Stage 7 tables.
+/// Encode SQL values into heap row bytes used by SQL tables.
 pub fn encode_row(values: &[Value]) -> DbResult<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(SQL_ROW_MAGIC);
@@ -167,7 +181,7 @@ pub fn encode_row(values: &[Value]) -> DbResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Decode Stage 7 SQL row bytes from a heap table.
+/// Decode SQL row bytes from a heap table.
 pub fn decode_row(bytes: &[u8]) -> DbResult<Vec<Value>> {
     let mut cursor = DecodeCursor::new(bytes);
     let magic = cursor.read_bytes(4)?;
@@ -221,8 +235,52 @@ fn execute_insert<F: VfsFile>(
     let relation = lookup_relation(store, table)?.clone();
     let values = coerce_values(&relation.columns, values)?;
     let bytes = encode_row(&values)?;
-    store.insert_row_autocommit(relation.id, &bytes)?;
+    let index_relations: Vec<RelationInfo> = store
+        .catalog()
+        .indexes_on_table(relation.id)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    let mut transaction = store.begin()?;
+    let row_id = transaction.insert_row(relation.id, &bytes)?;
+    for index_relation in index_relations {
+        let index_storage = index_relation.index_storage().ok_or(
+            DbError::InternalInvariant("index relation without index storage"),
+        )?;
+        let column_index = resolve_column_index(&relation, index_storage.column_name())?;
+        if let Some(key) = index_key_from_value(&values[column_index])? {
+            transaction.insert_index_entry(index_relation.id, key, row_id)?;
+        }
+    }
+    transaction.commit()?;
     Ok(ExecResult::StatementComplete { rows_affected: 1 })
+}
+
+fn execute_create_index<F: VfsFile>(
+    store: &mut TransactionalStore<F>,
+    name: &str,
+    table: &str,
+    column: &str,
+) -> DbResult<ExecResult> {
+    let relation = lookup_relation(store, table)?.clone();
+    let column_index = resolve_column_index(&relation, column)?;
+    ensure_indexable_column(&relation.columns[column_index])?;
+
+    let mut transaction = store.begin()?;
+    let (index_relation_id, _root_page_id) =
+        transaction.create_index(name.to_string(), relation.id, column.to_string())?;
+
+    for heap_row in transaction.full_scan(relation.id)? {
+        let values = decode_row(&heap_row.bytes)?;
+        validate_row_width(&relation, &values)?;
+        if let Some(key) = index_key_from_value(&values[column_index])? {
+            transaction.insert_index_entry(index_relation_id, key, heap_row.row_id)?;
+        }
+    }
+
+    transaction.commit()?;
+    Ok(ExecResult::StatementComplete { rows_affected: 0 })
 }
 
 fn execute_select<F: VfsFile>(
@@ -238,16 +296,11 @@ fn execute_select<F: VfsFile>(
         None => None,
     };
 
+    let candidate_rows = candidate_rows(store, &relation, selection)?;
     let mut rows = Vec::new();
-    for heap_row in store.full_scan(relation.id)? {
+    for heap_row in candidate_rows {
         let values = decode_row(&heap_row.bytes)?;
-        if values.len() != relation.columns.len() {
-            return Err(DbError::Corruption(format!(
-                "SQL row value count {} does not match catalog column count {}",
-                values.len(),
-                relation.columns.len()
-            )));
-        }
+        validate_row_width(&relation, &values)?;
 
         if let (Some(index), Some(selection)) = (selection_index, selection) {
             if !sql_values_equal(&values[index], &selection.value) {
@@ -271,6 +324,31 @@ fn execute_select<F: VfsFile>(
         .collect();
 
     Ok(ExecResult::Query { columns, rows })
+}
+
+fn candidate_rows<F: VfsFile>(
+    store: &mut TransactionalStore<F>,
+    relation: &RelationInfo,
+    selection: Option<&Selection>,
+) -> DbResult<Vec<rdbms_catalog::HeapRow>> {
+    let Some(selection) = selection else {
+        return store.full_scan(relation.id);
+    };
+    let Some(index_relation) = find_index_on_column(store, relation.id, &selection.column) else {
+        return store.full_scan(relation.id);
+    };
+    let Some(key) = index_key_from_value(&selection.value)? else {
+        return store.full_scan(relation.id);
+    };
+
+    let row_ids = store.lookup_index(index_relation.id, &key)?;
+    let mut rows = Vec::with_capacity(row_ids.len());
+    for row_id in row_ids {
+        if let Some(row) = store.read_row(relation.id, row_id)? {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
 }
 
 fn lookup_relation<'a, F: VfsFile>(
@@ -302,6 +380,53 @@ fn resolve_column_index(relation: &RelationInfo, column_name: &str) -> DbResult<
             "unknown column '{}' on relation '{}'",
             column_name, relation.name
         )))
+}
+
+fn find_index_on_column<F: VfsFile>(
+    store: &TransactionalStore<F>,
+    table_id: rdbms_core::RelationId,
+    column_name: &str,
+) -> Option<RelationInfo> {
+    store
+        .catalog()
+        .indexes_on_table(table_id)
+        .into_iter()
+        .find(|relation| {
+            relation
+                .index_storage()
+                .is_some_and(|storage| storage.column_name() == column_name)
+        })
+        .cloned()
+}
+
+fn validate_row_width(relation: &RelationInfo, values: &[Value]) -> DbResult<()> {
+    if values.len() != relation.columns.len() {
+        return Err(DbError::Corruption(format!(
+            "SQL row value count {} does not match catalog column count {}",
+            values.len(),
+            relation.columns.len()
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_indexable_column(column: &ColumnDef) -> DbResult<()> {
+    match column.type_name.as_str() {
+        "INT" | "INTEGER" | "TEXT" => Ok(()),
+        other => Err(DbError::User(format!(
+            "column '{}' of type '{}' is not indexable in Stage 8",
+            column.name, other
+        ))),
+    }
+}
+
+fn index_key_from_value(value: &Value) -> DbResult<Option<IndexKey>> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Integer(value) => Ok(Some(IndexKey::Integer(*value))),
+        Value::Text(value) => Ok(Some(IndexKey::Text(value.clone()))),
+        Value::Double(_) => Ok(None),
+    }
 }
 
 fn coerce_values(columns: &[ColumnDef], values: Vec<Value>) -> DbResult<Vec<Value>> {
@@ -565,7 +690,13 @@ impl Parser {
 
     fn parse_statement(&mut self) -> DbResult<Statement> {
         if self.consume_keyword("CREATE") {
-            self.parse_create_table()
+            if self.consume_keyword("TABLE") {
+                self.parse_create_table()
+            } else if self.consume_keyword("INDEX") {
+                self.parse_create_index()
+            } else {
+                Err(DbError::User("expected TABLE or INDEX after CREATE".to_string()))
+            }
         } else if self.consume_keyword("INSERT") {
             self.parse_insert()
         } else if self.consume_keyword("SELECT") {
@@ -576,7 +707,6 @@ impl Parser {
     }
 
     fn parse_create_table(&mut self) -> DbResult<Statement> {
-        self.expect_keyword("TABLE")?;
         let name = normalize_identifier(self.expect_identifier("table name")?);
         self.expect_token(Token::LParen, "expected '(' after table name")?;
 
@@ -594,6 +724,16 @@ impl Parser {
 
         self.expect_token(Token::RParen, "expected ')' after column list")?;
         Ok(Statement::CreateTable { name, columns })
+    }
+
+    fn parse_create_index(&mut self) -> DbResult<Statement> {
+        let name = normalize_identifier(self.expect_identifier("index name")?);
+        self.expect_keyword("ON")?;
+        let table = normalize_identifier(self.expect_identifier("table name")?);
+        self.expect_token(Token::LParen, "expected '(' before indexed column")?;
+        let column = normalize_identifier(self.expect_identifier("indexed column")?);
+        self.expect_token(Token::RParen, "expected ')' after indexed column")?;
+        Ok(Statement::CreateIndex { name, table, column })
     }
 
     fn parse_insert(&mut self) -> DbResult<Statement> {
@@ -851,6 +991,16 @@ mod tests {
                 }),
             }
         );
+
+        let create_index = parse_statement("CREATE INDEX users_id_idx ON users(id)")?;
+        assert_eq!(
+            create_index,
+            Statement::CreateIndex {
+                name: "users_id_idx".to_string(),
+                table: "users".to_string(),
+                column: "id".to_string(),
+            }
+        );
         Ok(())
     }
 
@@ -880,6 +1030,8 @@ mod tests {
         )?;
         execute(&mut store, "INSERT INTO users VALUES (1, 'Ada', 9.5)", &[])?;
         execute(&mut store, "INSERT INTO users VALUES (2, 'Linus', 7)", &[])?;
+        execute(&mut store, "CREATE INDEX users_id_idx ON users(id)", &[])?;
+        execute(&mut store, "INSERT INTO users VALUES (3, 'Grace', 8.25)", &[])?;
 
         let result = execute(&mut store, "SELECT name, score FROM users WHERE id = 2", &[])?;
         assert_eq!(
@@ -896,6 +1048,18 @@ mod tests {
                     },
                 ],
                 rows: vec![vec![Value::Text("Linus".to_string()), Value::Double(7.0)]],
+            }
+        );
+
+        let result = execute(&mut store, "SELECT name FROM users WHERE id = 3", &[])?;
+        assert_eq!(
+            result,
+            ExecResult::Query {
+                columns: vec![ColumnInfo {
+                    name: "name".to_string(),
+                    type_name: "TEXT".to_string(),
+                }],
+                rows: vec![vec![Value::Text("Grace".to_string())]],
             }
         );
 

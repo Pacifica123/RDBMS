@@ -219,6 +219,48 @@ unit tests на parse/execute.
 
 ## Stage 8 — index v0
 
+Статус: выполнено.
+
+Реализовано:
+
+```text
+rdbms_index crate;
+PageType::Index;
+B+Tree node format v0;
+leaf/internal nodes;
+leaf split/internal split/root split;
+equality lookup по INT/TEXT ключам;
+catalog metadata для index relation;
+CREATE INDEX name ON table(column);
+INSERT поддерживает обновление существующих indexes;
+SELECT ... WHERE indexed_column = literal использует index, если он есть.
+```
+
+Ограничения:
+
+```text
+нет range scan;
+нет UNIQUE indexes;
+нет delete/update index maintenance;
+нет composite keys;
+нет DOUBLE indexes;
+нет planner cost model;
+нет MVCC visibility в index layer.
+```
+
+## Stage 9 — planner and execution v0
+
+Статус: следующий патч / не начато.
+
+Цель:
+
+```text
+отделить parser от binder/planner/executor;
+построить простое logical plan дерево;
+явно выбирать seq scan или index lookup;
+подготовить место для UPDATE/DELETE и range predicates.
+```
+
 ```text
 B+Tree page format;
 insert/delete;

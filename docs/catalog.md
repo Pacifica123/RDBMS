@@ -125,3 +125,24 @@ CatalogStore::replace_catalog().
 Stage 7 хранит SQL-visible строки как raw heap bytes со своим payload magic `RDBR`. Catalog metadata используется для проверки числа значений, имён колонок и простых SQL type names.
 
 `rdbms_catalog` не парсит SQL и не знает о SQL expressions. Он только хранит relation/column metadata и page ids.
+
+## Index catalog metadata v0
+
+Stage 8 extends catalog storage objects with B+Tree indexes.
+
+```text
+RelationKind::Index
+StorageObject::BPlusTree
+```
+
+The index storage object stores:
+
+```text
+table_id      heap table being indexed
+column_name   indexed column
+root_page_id  current B+Tree root page
+```
+
+The catalog is the only owner of the root page id. When root split happens, transaction code updates catalog metadata and marks the catalog page dirty.
+
+Stage 8 supports one-column indexes only. Duplicate indexes on the same table column are rejected by catalog metadata checks.

@@ -8,6 +8,7 @@
 
 use rdbms_catalog::{open_catalog_store, Catalog, CatalogStore, ColumnDef, HeapRow, CATALOG_PAGE_ID};
 use rdbms_core::{DbError, DbResult, PageId, RelationId, RowId, SlotId, TxId};
+use rdbms_index::{self, BPlusTreePageStore, IndexKey};
 use rdbms_page::{Page, PageType};
 use rdbms_vfs::{Vfs, VfsFile};
 use rdbms_wal::{WalRecordKind, WalWriter};
@@ -55,6 +56,33 @@ impl<F: VfsFile> TransactionalStore<F> {
     /// Scan committed heap rows for a relation.
     pub fn full_scan(&self, relation_id: RelationId) -> DbResult<Vec<HeapRow>> {
         self.store.full_scan(relation_id)
+    }
+
+    /// Read one committed heap row by physical row id.
+    pub fn read_row(&self, relation_id: RelationId, row_id: RowId) -> DbResult<Option<HeapRow>> {
+        self.store.read_row(relation_id, row_id)
+    }
+
+    /// Look up row ids through a committed B+Tree index relation.
+    pub fn lookup_index(
+        &mut self,
+        index_relation_id: RelationId,
+        key: &IndexKey,
+    ) -> DbResult<Vec<RowId>> {
+        let root_page_id = self
+            .store
+            .catalog()
+            .relation_by_id(index_relation_id)
+            .and_then(|relation| relation.index_storage())
+            .ok_or(DbError::User(format!(
+                "unknown index relation id: {}",
+                index_relation_id.0
+            )))?
+            .root_page_id();
+        let mut page_store = CommittedIndexPageStore {
+            store: &mut self.store,
+        };
+        rdbms_index::lookup(&mut page_store, root_page_id, key)
     }
 
     /// Start one write transaction.
@@ -183,6 +211,54 @@ impl<'a, F: VfsFile> Transaction<'a, F> {
             .insert(first_page_id, Page::new(first_page_id, PageType::Heap));
         self.mark_catalog_dirty()?;
         Ok(relation_id)
+    }
+
+    /// Create an empty B+Tree index relation inside this transaction.
+    pub fn create_index(
+        &mut self,
+        name: impl Into<String>,
+        table_id: RelationId,
+        column_name: impl Into<String>,
+    ) -> DbResult<(RelationId, PageId)> {
+        self.ensure_active()?;
+        let (index_relation_id, root_page_id) = self
+            .working_catalog
+            .create_index_metadata(name, table_id, column_name)?;
+        {
+            let mut page_store = TransactionIndexPageStore { transaction: self };
+            rdbms_index::initialize_root(&mut page_store, root_page_id)?;
+        }
+        self.mark_catalog_dirty()?;
+        Ok((index_relation_id, root_page_id))
+    }
+
+    /// Insert one index entry into a B+Tree index relation.
+    pub fn insert_index_entry(
+        &mut self,
+        index_relation_id: RelationId,
+        key: IndexKey,
+        row_id: RowId,
+    ) -> DbResult<()> {
+        self.ensure_active()?;
+        let root_page_id = self
+            .working_catalog
+            .relation_by_id(index_relation_id)
+            .and_then(|relation| relation.index_storage())
+            .ok_or(DbError::User(format!(
+                "unknown index relation id: {}",
+                index_relation_id.0
+            )))?
+            .root_page_id();
+        let new_root_page_id = {
+            let mut page_store = TransactionIndexPageStore { transaction: self };
+            rdbms_index::insert(&mut page_store, root_page_id, key, row_id)?
+        };
+        if new_root_page_id != root_page_id {
+            self.working_catalog
+                .set_index_root_page(index_relation_id, new_root_page_id)?;
+        }
+        self.mark_catalog_dirty()?;
+        Ok(())
     }
 
     /// Insert raw row bytes into a heap table inside this transaction.
@@ -329,6 +405,48 @@ impl<'a, F: VfsFile> Drop for Transaction<'a, F> {
         if self.state == TransactionState::Active {
             self.manager.finish_writer();
         }
+    }
+}
+
+struct TransactionIndexPageStore<'b, 'a, F: VfsFile> {
+    transaction: &'b mut Transaction<'a, F>,
+}
+
+impl<'b, 'a, F: VfsFile> BPlusTreePageStore for TransactionIndexPageStore<'b, 'a, F> {
+    fn load_page(&mut self, page_id: PageId) -> DbResult<Page> {
+        self.transaction.load_page(page_id)
+    }
+
+    fn store_page(&mut self, page: Page) -> DbResult<()> {
+        let page_id = page.header()?.page_id;
+        self.transaction.dirty_pages.insert(page_id, page);
+        Ok(())
+    }
+
+    fn allocate_page(&mut self) -> DbResult<PageId> {
+        self.transaction.working_catalog.allocate_page_id()
+    }
+}
+
+struct CommittedIndexPageStore<'a, F: VfsFile> {
+    store: &'a mut CatalogStore<F>,
+}
+
+impl<'a, F: VfsFile> BPlusTreePageStore for CommittedIndexPageStore<'a, F> {
+    fn load_page(&mut self, page_id: PageId) -> DbResult<Page> {
+        self.store.page_file().read_page(page_id)
+    }
+
+    fn store_page(&mut self, _page: Page) -> DbResult<()> {
+        Err(DbError::InternalInvariant(
+            "read-only index page store cannot write pages",
+        ))
+    }
+
+    fn allocate_page(&mut self) -> DbResult<PageId> {
+        Err(DbError::InternalInvariant(
+            "read-only index page store cannot allocate pages",
+        ))
     }
 }
 

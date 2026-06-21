@@ -39,6 +39,8 @@ pub enum PageType {
     Catalog,
     /// Free-space or allocator page.
     FreeMap,
+    /// B+Tree index node page.
+    Index,
 }
 
 impl PageType {
@@ -48,6 +50,7 @@ impl PageType {
             Self::Heap => 2,
             Self::Catalog => 3,
             Self::FreeMap => 4,
+            Self::Index => 5,
         }
     }
 
@@ -57,6 +60,7 @@ impl PageType {
             2 => Ok(Self::Heap),
             3 => Ok(Self::Catalog),
             4 => Ok(Self::FreeMap),
+            5 => Ok(Self::Index),
             _ => Err(DbError::Corruption(format!("unknown page type: {value}"))),
         }
     }

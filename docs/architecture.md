@@ -103,3 +103,23 @@ MVP: many readers + single writer. Это ограничение принима�
 ## 7. Граница с legacy
 
 Старый код сохранён только как исторический материал. Он не импортируется, не компилируется и не является upstream-модулем новой архитектуры.
+
+## Stage 8 — index layer
+
+Stage 8 inserts `rdbms_index` between SQL execution and physical pages.
+
+```text
+rdbms_sql
+  |
+  +-- sequential heap scan through rdbms_tx
+  |
+  +-- equality lookup through rdbms_index when an index exists
+
+rdbms_tx
+  |
+  +-- stages catalog pages
+  +-- stages heap pages
+  +-- stages index pages
+```
+
+The index layer does not own files and does not bypass transactions. It receives a small page-store interface from `rdbms_tx`, so index changes participate in the same dirty-page staging and WAL full-page-image commit protocol as catalog and heap changes.
