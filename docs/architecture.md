@@ -38,7 +38,11 @@ SQL остаётся пользовательским интерфейсом, н
 
 ### rdbms_wal
 
-Журнал предзаписи. Текущий слой реализует WAL record binary envelope v0, LSN allocator, append-only writer, sequential reader, commit marker, truncated suffix detection и page-image redo hook. Полный recovery loop остаётся отдельным слоем.
+Журнал предзаписи. Текущий слой реализует WAL record binary envelope v0, LSN allocator, append-only writer, sequential reader, commit marker, truncated suffix detection и page-image redo hook. WAL не открывает базу сам и не пишет страницы данных напрямую.
+
+### rdbms_recovery
+
+Минимальный recovery loop. Слой открывает data file и WAL file через VFS, сканирует WAL, применяет только committed full-page images к `PageFile`, игнорирует uncommitted page images и возвращает recovered page-file handle. На текущем этапе это redo-only skeleton без undo, checkpoint state и commit protocol.
 
 ### rdbms_catalog
 

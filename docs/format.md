@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs` и WAL record stream v0 в crate `rdbms_wal`. VFS/page store записывает и читает страницы через random-access файл.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal` и первый redo-only recovery loop в crate `rdbms_recovery`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -127,6 +127,22 @@ Record kinds:
 
 Reader обязан обнаруживать обрезанный suffix: неполный header или payload в конце WAL возвращает `DbError::Corruption`.
 
+## Recovery behavior v0
+
+Stage 4 не добавляет новый on-disk layout. Recovery v0 использует существующий database file v0 и WAL record v0:
+
+```text
+open data file через VFS;
+open WAL file через VFS;
+scan WAL с offset 0;
+validate WAL records;
+redo только PageImage records транзакций с CommitTx и без AbortTx;
+write full page image в PageFile по page_id;
+sync data file после recovery pass.
+```
+
+Uncommitted page images не применяются. Повторный запуск recovery допустим: committed full-page image может быть записан повторно и должен оставить тот же page state.
+
 ## Что ещё не является форматом БД
 
 Сейчас нет:
@@ -139,7 +155,8 @@ record schema layout;
 WAL file header;
 page_lsn update API;
 checkpoint state;
+recovery checkpoint position;
 catalog bootstrap pages.
 ```
 
-Следующий практический слой — recovery skeleton: сканировать WAL, применять committed page images и сделать повторный recovery идемпотентным.
+Следующий практический слой — catalog and heap table v0 поверх уже существующего page/WAL/recovery skeleton.

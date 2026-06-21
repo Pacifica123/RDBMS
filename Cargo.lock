@@ -33,6 +33,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdbms_recovery"
+version = "0.1.0"
+dependencies = [
+ "rdbms_core",
+ "rdbms_page",
+ "rdbms_vfs",
+ "rdbms_wal",
+]
+
+[[package]]
 name = "rdbms_sql"
 version = "0.1.0"
 dependencies = [

@@ -71,14 +71,14 @@ LsnAllocator
 
 ## 7. Redo hook
 
-Stage 3 не реализует recovery loop. Он предоставляет только hook:
+WAL предоставляет hook:
 
 ```text
 PageImageRedo::redo_page_image(lsn, tx_id, page_id, image)
 redo_committed_page_images(records, redo)
 ```
 
-Hook replay-ит только page images транзакций, у которых есть `CommitTx` и нет `AbortTx`. Checkpoint, file bootstrap, idempotent database open и применение к `PageFile` остаются Stage 4.
+Hook replay-ит только page images транзакций, у которых есть `CommitTx` и нет `AbortTx`. Stage 4 использует этот hook в `rdbms_recovery`, чтобы применять committed full-page images к `PageFile` во время `open_database`. Checkpoint state и file bootstrap всё ещё не реализованы.
 
 ## 8. Что не делаем сразу
 
@@ -92,7 +92,7 @@ checkpoint state;
 page_lsn update API;
 commit protocol между WAL и data file;
 fault-injection VFS;
-recovery при Database::open.
+recovery checkpoint position.
 ```
 
 ## 9. Тесты
@@ -107,7 +107,7 @@ truncated WAL suffix detection;
 redo hook replays only committed page images.
 ```
 
-Следующие recovery milestones должны добавить crash tests:
+Следующие recovery milestones после Stage 4 должны добавить crash tests:
 
 1. сбой до записи WAL;
 2. сбой после WAL до data page;

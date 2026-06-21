@@ -102,19 +102,35 @@ redo hook для committed page image.
 
 ## Stage 4 — recovery skeleton
 
-Следующий хороший патч.
+Статус: выполнено.
 
-Нужно реализовать:
+Реализовано:
 
 ```text
-open database;
-scan WAL;
-redo committed page images;
-ignore uncommitted changes;
-idempotent recovery test.
+rdbms_recovery crate;
+DatabasePaths;
+open_database через VFS;
+scan WAL при open;
+redo committed page images в PageFile;
+ignore uncommitted page images;
+idempotent recovery test;
+propagate WAL corruption during recovery.
+```
+
+Ограничения:
+
+```text
+нет undo;
+нет checkpoint state;
+нет page_lsn-based skip;
+нет commit protocol между WAL и data file;
+нет fault-injection VFS;
+нет catalog/bootstrap database header.
 ```
 
 ## Stage 5 — catalog and heap table v0
+
+Следующий хороший патч.
 
 ```text
 bootstrap catalog;
