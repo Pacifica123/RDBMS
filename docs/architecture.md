@@ -46,7 +46,7 @@ SQL остаётся пользовательским интерфейсом, н
 
 ### rdbms_catalog
 
-Системные таблицы и метаданные: relations, columns, indexes, versions. Каталог не должен быть обычным Rust-полем в структуре `Database`; он должен жить в storage и участвовать в recovery.
+Persistent catalog и heap table v0. Текущий слой резервирует page 0 под catalog record, хранит `RelationId -> StorageObject::Heap { pages }`, умеет bootstrap catalog, internal `create_table`, raw `insert_row` и `full_scan`. Каталог уже живёт в storage, но transactional catalog changes, SQL binder и WAL commit protocol ещё не реализованы.
 
 ### rdbms_sql
 

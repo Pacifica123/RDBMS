@@ -130,18 +130,34 @@ propagate WAL corruption during recovery.
 
 ## Stage 5 — catalog and heap table v0
 
-Следующий хороший патч.
+Статус: выполнено.
+
+Реализовано:
 
 ```text
-bootstrap catalog;
-relation_id → storage object;
+bootstrap catalog page 0;
+relation_id → heap storage object;
 internal create_table API;
-insert row bytes;
+insert raw row bytes;
 full scan;
-reopen schema test.
+reopen schema test;
+heap page extension when current pages are full.
+```
+
+Ограничения:
+
+```text
+нет SQL CREATE TABLE/INSERT/SELECT;
+нет record schema encoding;
+нет transactional catalog changes;
+нет WAL protocol for heap inserts;
+нет rollback;
+нет indexes.
 ```
 
 ## Stage 6 — transactions v0
+
+Следующий хороший патч.
 
 ```text
 TxId;

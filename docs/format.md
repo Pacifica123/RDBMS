@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal` и первый redo-only recovery loop в crate `rdbms_recovery`. VFS/page store записывает и читает страницы через random-access файл.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -93,7 +93,7 @@ Checksum пока простой: сумма байтов с wraparound. Пол�
 offset = N * PAGE_SIZE
 ```
 
-На этом этапе ещё нет allocator, free-space map, file header bootstrap и catalog bootstrap. `PageType::FileHeader` уже зарезервирован в формате страницы, но `rdbms_vfs` пока не создаёт специальную header page автоматически.
+На этом этапе ещё нет allocator, free-space map и file header bootstrap. `PageType::FileHeader` уже зарезервирован в формате страницы, но `rdbms_vfs` пока не создаёт специальную header page автоматически. Page 0 теперь зарезервирована слоем `rdbms_catalog` под catalog page v0.
 
 `PageFile::write_page` перед записью проверяет checksum и совпадение `PageId` в заголовке. `PageFile::read_page` читает ровно `PAGE_SIZE` байт, строит `Page::from_bytes`, проверяет checksum и отдельно проверяет, что запрошенный `PageId` совпал с `page_id` в заголовке. Повреждённая страница после reopen должна возвращать `DbError::Corruption`.
 
@@ -143,6 +143,61 @@ sync data file после recovery pass.
 
 Uncommitted page images не применяются. Повторный запуск recovery допустим: committed full-page image может быть записан повторно и должен оставить тот же page state.
 
+## Catalog page v0
+
+Stage 5 резервирует page 0 под persistent catalog:
+
+```text
+page_id = 0
+page_type = Catalog
+slot 0 = catalog record v0
+```
+
+Catalog record v0:
+
+```text
+offset  size      field
+0       4         magic = "RDBC"
+4       2         version = 1
+6       8         next_relation_id
+14      8         next_page_id
+22      4         relation_count
+26      variable  relation entries
+```
+
+Relation entry v0:
+
+```text
+relation_id: u64
+relation_kind: u8, 1 = Table, 2 = Index, 3 = System
+storage_object
+name: string16
+column_count: u16
+columns: repeated { name: string16, type_name: string16 }
+```
+
+Storage object v0:
+
+```text
+kind: u8, 1 = Heap
+page_count: u32
+pages: repeated PageId/u64
+```
+
+`string16 = u16 byte_len + UTF-8 bytes`.
+
+## Heap table v0
+
+Heap table v0 хранит raw row bytes в обычных slotted pages с `PageType::Heap`. Каталог связывает relation id с набором heap page ids:
+
+```text
+RelationId -> StorageObject::Heap { pages: Vec<PageId> }
+```
+
+Heap pages не обязаны быть непрерывными. При нехватке места `CatalogStore::insert_row` добавляет новую страницу через catalog `next_page_id` и обновляет storage object.
+
+`RowId = (PageId, SlotId)`.
+
 ## Что ещё не является форматом БД
 
 Сейчас нет:
@@ -152,11 +207,12 @@ file header bootstrap;
 segment layout;
 free-space map;
 record schema layout;
+SQL-visible table schema semantics;
 WAL file header;
 page_lsn update API;
 checkpoint state;
 recovery checkpoint position;
-catalog bootstrap pages.
+transactional catalog changes.
 ```
 
-Следующий практический слой — catalog and heap table v0 поверх уже существующего page/WAL/recovery skeleton.
+Следующий практический слой — transactions v0 поверх catalog/heap skeleton.
