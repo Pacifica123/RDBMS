@@ -24,6 +24,8 @@ corrupted pages are detected, not silently accepted.
 6. проверить page checksums;
 7. вернуть typed error при corruption.
 
+На текущем Stage 3 реализованы только WAL scan и `PageImageRedo` hook. Сам recovery loop при `Database::open` ещё не реализован.
+
 ## 3. Идемпотентность
 
 Recovery можно запускать несколько раз подряд. Второй запуск не должен менять состояние иначе, чем первый.

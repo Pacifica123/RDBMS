@@ -30,7 +30,7 @@ SQL остаётся пользовательским интерфейсом, н
 
 ### rdbms_vfs
 
-Абстракция файловой системы, синхронизации данных и первого page store. Нужна для Linux, Windows, Android, тестов отказов и будущей fault injection. Ядро не должно напрямую зависеть от произвольных вызовов `std::fs` в бизнес-логике. Текущий слой реализует `StdVfs`, random-access `read_at/write_at/sync_data` и `PageFile`, где `PageId` отображается в `page_id * PAGE_SIZE`.
+Абстракция файловой системы, синхронизации данных и первого page store. Нужна для Linux, Windows, Android, тестов отказов и будущей fault injection. Ядро не должно напрямую зависеть от произвольных вызовов `std::fs` в бизнес-логике. Текущий слой реализует `StdVfs`, random-access `read_at/write_at`, `len`, `sync_data` и `PageFile`, где `PageId` отображается в `page_id * PAGE_SIZE`.
 
 ### rdbms_page
 
@@ -38,7 +38,7 @@ SQL остаётся пользовательским интерфейсом, н
 
 ### rdbms_wal
 
-Журнал предзаписи. WAL должен описывать изменения так, чтобы recovery мог восстановить согласованное состояние после сбоя.
+Журнал предзаписи. Текущий слой реализует WAL record binary envelope v0, LSN allocator, append-only writer, sequential reader, commit marker, truncated suffix detection и page-image redo hook. Полный recovery loop остаётся отдельным слоем.
 
 ### rdbms_catalog
 

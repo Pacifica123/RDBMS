@@ -2,7 +2,7 @@
 
 ## Статус
 
-Документ описывает текущий экспериментальный формат страницы. Это не обещание вечной совместимости. До появления WAL/recovery формат можно менять, но каждое изменение должно быть явно отражено здесь и в тестах `rdbms_page`.
+Документ описывает текущий экспериментальный формат страницы, database file v0 и WAL record v0. Это не обещание вечной совместимости. До полноценного recovery формат можно менять, но каждое изменение должно быть явно отражено здесь и в тестах соответствующего crate.
 
 ## Базовая единица хранения
 
@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page` и первый disk-backed слой в crate `rdbms_vfs`. VFS/page store записывает и читает страницы через random-access файл.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs` и WAL record stream v0 в crate `rdbms_wal`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -97,6 +97,36 @@ offset = N * PAGE_SIZE
 
 `PageFile::write_page` перед записью проверяет checksum и совпадение `PageId` в заголовке. `PageFile::read_page` читает ровно `PAGE_SIZE` байт, строит `Page::from_bytes`, проверяет checksum и отдельно проверяет, что запрошенный `PageId` совпал с `page_id` в заголовке. Повреждённая страница после reopen должна возвращать `DbError::Corruption`.
 
+## WAL record v0
+
+WAL v0 — append-only поток records без общего file header. Один record состоит из fixed header и payload:
+
+```text
+offset  size  field
+0       4     magic = "RDBW"
+4       2     version = 1
+6       2     kind
+8       8     lsn
+16      8     tx_id, u64::MAX если не применяется
+24      8     page_id, u64::MAX если не применяется
+32      4     payload_len
+36      4     checksum
+```
+
+`WAL_HEADER_SIZE = 40`. Все числа little-endian. В WAL v0 `LSN` равен byte offset начала record header.
+
+Record kinds:
+
+```text
+1 = BeginTx
+2 = PageImage, payload = PAGE_SIZE bytes
+3 = CommitTx
+4 = AbortTx
+5 = Checkpoint
+```
+
+Reader обязан обнаруживать обрезанный suffix: неполный header или payload в конце WAL возвращает `DbError::Corruption`.
+
 ## Что ещё не является форматом БД
 
 Сейчас нет:
@@ -106,9 +136,10 @@ file header bootstrap;
 segment layout;
 free-space map;
 record schema layout;
-WAL binding;
+WAL file header;
+page_lsn update API;
 checkpoint state;
 catalog bootstrap pages.
 ```
 
-Следующий практический слой — WAL skeleton: записывать page image records, фиксировать commit marker и обнаруживать обрезанный WAL.
+Следующий практический слой — recovery skeleton: сканировать WAL, применять committed page images и сделать повторный recovery идемпотентным.

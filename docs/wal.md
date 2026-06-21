@@ -19,31 +19,95 @@ redo     — повторить изменение, если оно ещё не 
 undo     — отменить изменение незавершённой транзакции; не MVP первой итерации
 ```
 
-## 4. MVP WAL records
+В WAL v0 `LSN` — это byte offset начала record header в WAL-файле. Первый record получает `Lsn(0)`, следующий record получает offset сразу после предыдущего encoded record.
 
-Минимальный набор для первых этапов:
+## 4. WAL file v0
+
+WAL v0 — append-only поток независимых records. Общего file header пока нет. Reader сканирует файл с offset `0` до `file_len`. Если в конце файла остаётся неполный header или неполный payload, это `DbError::Corruption`, а не молчаливый EOF.
+
+Формат record header:
 
 ```text
-BeginTx
-PageUpdate { page_id, before_checksum, after_image_or_delta }
-CommitTx
-AbortTx
-Checkpoint
+offset  size  field
+0       4     magic = "RDBW"
+4       2     version = 1
+6       2     kind
+8       8     lsn
+16      8     tx_id, u64::MAX если не применяется
+24      8     page_id, u64::MAX если не применяется
+32      4     payload_len
+36      4     checksum
 ```
 
-На раннем milestone можно начать с page image WAL, а не с оптимальных дельт. Это проще для recovery tests.
+Все числа пишутся little-endian. `WAL_HEADER_SIZE = 40`.
 
-## 5. Sync boundary
+Checksum пока простой: сумма байтов с wraparound. Поле checksum при расчёте считается нулевым. Это слабый алгоритм, но он фиксирует саму границу проверки WAL corruption до выбора настоящего checksum.
 
-Commit считается durable только после sync WAL до commit record. Точная реализация зависит от VFS и платформы, поэтому должна проходить через `rdbms_vfs`.
+## 5. Record kinds v0
 
-## 6. Что не делаем сразу
+```text
+1 = BeginTx    { tx_id }
+2 = PageImage  { tx_id, page_id, payload = PAGE_SIZE bytes }
+3 = CommitTx   { tx_id }
+4 = AbortTx    { tx_id }
+5 = Checkpoint
+```
+
+`PageImage` хранит полный serialized page image из `rdbms_page`. Payload должен иметь размер ровно `PAGE_SIZE`. Во время redo hook image дополнительно проходит `Page::from_bytes`, то есть проверяются page magic, версия, slot boundaries и page checksum.
+
+## 6. Writer/reader boundary
+
+`rdbms_wal` работает поверх `rdbms_vfs::VfsFile`:
+
+```text
+WalWriter<F: VfsFile>
+WalReader<F: VfsFile>
+LsnAllocator
+```
+
+Для корректного сканирования WAL в `VfsFile` есть `len()`. Без длины файла нельзя отличить clean EOF на границе record от обрезанного suffix.
+
+`WalWriter::append` назначает LSN, кодирует record, пишет bytes по offset `lsn.0`. `WalWriter::sync_data` даёт sync boundary для будущего commit protocol. Stage 3 только предоставляет эту границу; полноценное правило “commit durable после WAL sync” будет собрано в transaction/recovery слое.
+
+## 7. Redo hook
+
+Stage 3 не реализует recovery loop. Он предоставляет только hook:
+
+```text
+PageImageRedo::redo_page_image(lsn, tx_id, page_id, image)
+redo_committed_page_images(records, redo)
+```
+
+Hook replay-ит только page images транзакций, у которых есть `CommitTx` и нет `AbortTx`. Checkpoint, file bootstrap, idempotent database open и применение к `PageFile` остаются Stage 4.
+
+## 8. Что не делаем сразу
 
 Не начинаем с полного ARIES, nested top actions, сложного checkpointing и fine-grained undo. Сначала нужен воспроизводимый маленький recovery loop.
 
-## 7. Тесты
+Сейчас ещё нет:
 
-Каждый WAL milestone должен иметь crash tests:
+```text
+WAL file header;
+checkpoint state;
+page_lsn update API;
+commit protocol между WAL и data file;
+fault-injection VFS;
+recovery при Database::open.
+```
+
+## 9. Тесты
+
+Для Stage 3 зафиксированы unit tests:
+
+```text
+binary envelope round-trip;
+LSN allocator offset progression;
+writer append + reader scan commit marker;
+truncated WAL suffix detection;
+redo hook replays only committed page images.
+```
+
+Следующие recovery milestones должны добавить crash tests:
 
 1. сбой до записи WAL;
 2. сбой после WAL до data page;

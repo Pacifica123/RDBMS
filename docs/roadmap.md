@@ -77,20 +77,34 @@ server mode.
 
 ## Stage 3 — WAL skeleton
 
-Следующий хороший патч.
+Статус: выполнено.
 
-Нужно реализовать:
+Реализовано:
 
 ```text
-WAL record binary envelope;
-LSN allocator;
-writer/reader;
+WAL record binary envelope v0;
+LSN allocator на byte offsets;
+WalWriter/WalReader поверх VfsFile;
 commit marker;
 truncated WAL detection;
-redo hook для page image.
+redo hook для committed page image.
+```
+
+Ограничения:
+
+```text
+нет WAL file header;
+нет page_lsn update API;
+нет recovery при open database;
+нет checkpoint state;
+нет fault-injection VFS.
 ```
 
 ## Stage 4 — recovery skeleton
+
+Следующий хороший патч.
+
+Нужно реализовать:
 
 ```text
 open database;

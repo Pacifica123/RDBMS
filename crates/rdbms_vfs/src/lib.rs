@@ -18,6 +18,9 @@ pub trait VfsFile {
     /// Write all bytes from `buf` starting at `offset`.
     fn write_all_at(&mut self, offset: u64, buf: &[u8]) -> DbResult<()>;
 
+    /// Return the current file length in bytes.
+    fn len(&self) -> DbResult<u64>;
+
     /// Force durable file contents according to the platform implementation.
     fn sync_data(&mut self) -> DbResult<()>;
 }
@@ -81,6 +84,10 @@ impl VfsFile for StdVfsFile {
     fn write_all_at(&mut self, offset: u64, buf: &[u8]) -> DbResult<()> {
         write_all_at(&self.file, offset, buf)?;
         Ok(())
+    }
+
+    fn len(&self) -> DbResult<u64> {
+        Ok(self.file.metadata()?.len())
     }
 
     fn sync_data(&mut self) -> DbResult<()> {
@@ -147,6 +154,11 @@ impl<F: VfsFile> PageFile<F> {
             )));
         }
         Ok(page)
+    }
+
+    /// Return the current file length in bytes.
+    pub fn len(&self) -> DbResult<u64> {
+        self.file.len()
     }
 
     /// Force durable file contents through the VFS boundary.
