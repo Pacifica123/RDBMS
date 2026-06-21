@@ -12,6 +12,7 @@ members = [
   "crates/rdbms_sql",
   "crates/rdbms_ext_abi",
   "crates/rdbms_extension",
+  "crates/rdbms_android",
   "crates/rdbms_cli",
 ]
 

@@ -7,7 +7,7 @@ RDBMS — учебно-инженерный проект собственной 
 Рабочая формула:
 
 ```text
-ядро СУБД = storage + WAL + recovery + catalog + transaction boundary + executor API + extension boundary + diagnostics
+ядро СУБД = storage + WAL + recovery + catalog + transaction boundary + executor API + extension boundary + platform boundary + diagnostics
 ```
 
 ## 2. Почему проект перезапущен
@@ -17,7 +17,7 @@ RDBMS — учебно-инженерный проект собственной 
 Новая архитектура строится снизу вверх:
 
 ```text
-байты → страницы → VFS/page store → WAL → recovery → каталог → таблицы → транзакции → SQL subset → индексы → расширения
+байты → страницы → VFS/page store → WAL → recovery → каталог → таблицы → транзакции → SQL subset → индексы → расширения → platform ports
 ```
 
 SQL остаётся пользовательским интерфейсом, но не является фундаментом ядра.
@@ -63,6 +63,11 @@ SQL subset v0. Слой содержит маленький lexer/parser, `State
 ### rdbms_extension
 
 Static extension registry v0. Текущий слой регистрирует built-in extension descriptors, проверяет ABI version и вызывает scalar functions через безопасные Rust function pointers. Dynamic native plugins пока не загружаются.
+
+
+### rdbms_android
+
+Android native-library smoke crate. Stage 10 builds it as `rlib` and `cdylib`, exports JNI-shaped smoke symbols and links it against the SQL/core stack. It is not an Android app and it does not expose a full SQL JNI API yet.
 
 ### rdbms_cli
 
@@ -149,3 +154,28 @@ rdbms_catalog
 ```
 
 Native plugins are still not loaded at runtime. The project now has an ABI descriptor sketch plus a safe built-in registry path. This keeps extension behavior testable without crossing unsafe FFI boundaries.
+
+
+## Stage 10 — platform ports
+
+Stage 10 adds portability smoke coverage around the current stack.
+
+```text
+rdbms_vfs
+  |
+  +-- cross-platform path/sync smoke
+  +-- Windows-only path/fsync smoke in CI
+
+rdbms_android
+  |
+  +-- cdylib/rlib
+  +-- JNI-shaped smoke symbols
+  +-- host JNI smoke tests
+
+.github/workflows/ci.yml
+  |
+  +-- Linux/Windows/macOS Rust matrix
+  +-- Android aarch64 native library build
+```
+
+The platform layer does not change page, WAL, recovery, catalog, transaction, SQL, index or extension formats. Platform-specific behavior should remain behind narrow boundaries such as `rdbms_vfs` or `rdbms_android`.

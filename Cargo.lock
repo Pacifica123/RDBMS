@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "rdbms_android"
+version = "0.1.0"
+dependencies = [
+ "rdbms_core",
+ "rdbms_sql",
+]
+
+[[package]]
 name = "rdbms_catalog"
 version = "0.1.0"
 dependencies = [

@@ -6,7 +6,7 @@
 
 ## Текущее состояние
 
-Статус: architecture-first reboot уже дошёл до минимального SQL subset, indexes и extension v0 поверх WAL-backed transactions. Проект умеет выполнять ограниченные `CREATE TABLE`, `INSERT INTO ... VALUES ...` и `SELECT` через `rdbms_sql`, но это ещё не полноценная SQL-СУБД.
+Статус: architecture-first reboot уже дошёл до минимального SQL subset, indexes, extension v0 и platform smoke поверх WAL-backed transactions. Проект умеет выполнять ограниченные `CREATE TABLE`, `INSERT INTO ... VALUES ...` и `SELECT` через `rdbms_sql`, но это ещё не полноценная SQL-СУБД.
 
 Старый бакалаврский прототип был полезен как research spike: он нащупал слова `Database`, `Table`, `Column`, `Row`, `Value` и желание иметь SQL-facing API. Но он начинался со строкового SQL-диспетчера, JSON-снимков и in-memory `Vec<Table>`, поэтому не годится как фундамент storage/recovery/transaction architecture.
 
@@ -23,6 +23,7 @@ crates/
   rdbms_sql/        SQL subset v0: parser, row encoding, direct executor
   rdbms_ext_abi/    стабильная внешняя ABI-граница расширений
   rdbms_extension/   static extension registry v0
+  rdbms_android/    Android cdylib/JNI smoke boundary
   rdbms_cli/        тонкий CLI поверх публичного API
 
 docs/
@@ -34,6 +35,7 @@ docs/
   transactions.md
   sql.md
   extension_abi.md
+  platform.md
   roadmap.md
   unsafe.md
   legacy/
@@ -71,9 +73,10 @@ SQL shell не является первым milestone. Первый milestone �
 6. `docs/non_goals.md`
 7. `docs/extension.md`
 8. `docs/extension_abi.md`
-9. `docs/unsafe.md`
-10. `docs/legacy/README.md`
-11. `docs/development/devctl_patches.md`
+9. `docs/platform.md`
+10. `docs/unsafe.md`
+11. `docs/legacy/README.md`
+12. `docs/development/devctl_patches.md`
 
 ## Процесс разработки
 
@@ -117,3 +120,17 @@ SELECT length('abc');
 ```
 
 This is not native plugin loading. Stage 9 persists extension metadata in the catalog and checks ABI version, but only built-in static extensions can be loaded.
+
+## Current platform capability after Stage 10
+
+The project now has CI and smoke coverage for portability:
+
+```text
+Linux/macOS/Windows cargo check/test matrix;
+Windows path + sync_data smoke in rdbms_vfs;
+Android native library crate rdbms_android;
+JNI-shaped smoke symbols;
+Android aarch64 library build in CI.
+```
+
+This is not an Android application or a full mobile API. It only proves that the current Rust stack has a narrow native-library boundary and can be checked outside the default host platform.

@@ -335,14 +335,71 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn std_vfs_path_and_sync_smoke() -> DbResult<()> {
+        let dir = temp_db_dir("path_sync");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("rdbms path sync smoke данные.db");
+        let slot_id: SlotId;
+
+        {
+            let vfs = StdVfs::new();
+            let mut page_file = open_page_file(&vfs, &path)?;
+            let mut page = Page::new(PageId(0), PageType::Heap);
+            slot_id = page.insert_record(b"path and fsync smoke")?;
+            page_file.write_page(&page)?;
+            page_file.sync_data()?;
+        }
+
+        {
+            let vfs = StdVfs::new();
+            let page_file = open_page_file(&vfs, &path)?;
+            let page = page_file.read_page(PageId(0))?;
+            assert_eq!(page.read_record(slot_id)?, Some(&b"path and fsync smoke"[..]));
+        }
+
+        cleanup_temp_dir(dir);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn std_vfs_windows_path_and_fsync_smoke() -> DbResult<()> {
+        let dir = temp_db_dir("windows_path_fsync");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("nested windows path smoke данные.db");
+        let mut page_file = open_page_file(&StdVfs::new(), &path)?;
+        let mut page = Page::new(PageId(2), PageType::Heap);
+        let slot_id = page.insert_record(b"windows sync smoke")?;
+
+        page_file.write_page(&page)?;
+        page_file.sync_data()?;
+        drop(page_file);
+
+        let reopened = open_page_file(&StdVfs::new(), &path)?;
+        let page = reopened.read_page(PageId(2))?;
+        assert_eq!(page.read_record(slot_id)?, Some(&b"windows sync smoke"[..]));
+
+        cleanup_temp_dir(dir);
+        Ok(())
+    }
+
     fn temp_db_path(test_name: &str) -> PathBuf {
+        temp_path(test_name, "dbonrs")
+    }
+
+    fn temp_db_dir(test_name: &str) -> PathBuf {
+        temp_path(test_name, "dir")
+    }
+
+    fn temp_path(test_name: &str, suffix: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         path.push(format!(
-            "rdbms_vfs_{test_name}_{}_{}.dbonrs",
+            "rdbms_vfs_{test_name}_{}_{}.{suffix}",
             std::process::id(),
             nanos
         ));
@@ -351,5 +408,9 @@ mod tests {
 
     fn cleanup_temp_file(path: PathBuf) {
         let _ = std::fs::remove_file(path);
+    }
+
+    fn cleanup_temp_dir(path: PathBuf) {
+        let _ = std::fs::remove_dir_all(path);
     }
 }

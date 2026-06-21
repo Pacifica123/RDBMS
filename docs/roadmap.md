@@ -299,9 +299,42 @@ WAL-backed install через rdbms_tx.
 
 ## Stage 10 — platform ports
 
+Статус: выполнено.
+
+Реализовано:
+
 ```text
-Windows path/fsync smoke;
-Android library build;
-JNI smoke;
-CI matrix.
+Windows path/fsync smoke в rdbms_vfs;
+cross-platform path/sync smoke;
+rdbms_android crate;
+Android cdylib/rlib build target;
+JNI-shaped smoke symbols;
+Java NativeSmoke wrapper;
+CI matrix для Linux/Windows/macOS;
+Android aarch64 native library build job.
+```
+
+Ограничения:
+
+```text
+нет Android app;
+нет Gradle/instrumented tests;
+нет emulator/device execution;
+нет Windows installer;
+нет JNI SQL query API;
+нет platform-specific file lock.
+```
+
+## Future — database API v0
+
+Статус: следующий крупный слой после Stage 10.
+
+Цель:
+
+```text
+Database::open;
+Connection;
+public execute API;
+более чистая граница между SQL session и storage handles;
+подготовка к CLI shell и JNI query API.
 ```
