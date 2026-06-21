@@ -221,3 +221,33 @@ SELECT name FROM users WHERE id = 1;
 ```
 
 The executor still validates the row through the normal heap row decode path and applies the predicate again. This keeps the result path simple and correct.
+
+## Stage 9 — extension scalar functions
+
+Stage 9 adds two SQL forms:
+
+```sql
+LOAD EXTENSION stdlib;
+SELECT upper('ada');
+```
+
+`LOAD EXTENSION` currently accepts only built-in static extensions known to the process. It validates the extension ABI version and persists extension metadata in the catalog through the transaction layer.
+
+Supported scalar calls in Stage 9 have no `FROM` clause and accept literal arguments only:
+
+```sql
+SELECT length('abc');
+SELECT lower('ADA');
+SELECT upper('ada');
+SELECT abs(-5);
+SELECT typeof(1.5);
+SELECT rdbms_version();
+```
+
+Column expressions are not supported yet:
+
+```sql
+SELECT upper(name) FROM users;
+```
+
+That belongs to a later binder/planner/expression stage.

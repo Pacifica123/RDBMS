@@ -6,7 +6,7 @@
 
 ## Текущее состояние
 
-Статус: architecture-first reboot уже дошёл до минимального SQL subset поверх WAL-backed transactions. Проект умеет выполнять ограниченные `CREATE TABLE`, `INSERT INTO ... VALUES ...` и `SELECT` через `rdbms_sql`, но это ещё не полноценная SQL-СУБД.
+Статус: architecture-first reboot уже дошёл до минимального SQL subset, indexes и extension v0 поверх WAL-backed transactions. Проект умеет выполнять ограниченные `CREATE TABLE`, `INSERT INTO ... VALUES ...` и `SELECT` через `rdbms_sql`, но это ещё не полноценная SQL-СУБД.
 
 Старый бакалаврский прототип был полезен как research spike: он нащупал слова `Database`, `Table`, `Column`, `Row`, `Value` и желание иметь SQL-facing API. Но он начинался со строкового SQL-диспетчера, JSON-снимков и in-memory `Vec<Table>`, поэтому не годится как фундамент storage/recovery/transaction architecture.
 
@@ -22,6 +22,7 @@ crates/
   rdbms_tx/         transactions v0 поверх catalog/heap/WAL
   rdbms_sql/        SQL subset v0: parser, row encoding, direct executor
   rdbms_ext_abi/    стабильная внешняя ABI-граница расширений
+  rdbms_extension/   static extension registry v0
   rdbms_cli/        тонкий CLI поверх публичного API
 
 docs/
@@ -58,7 +59,7 @@ SQL shell не является первым milestone. Первый milestone �
 
 Текущий верхний слой — `crates/rdbms_sql`. Он даёт маленький SQL subset поверх `rdbms_tx::TransactionalStore`: создание таблицы, вставку literal values и materialized SELECT с простым equality WHERE. Ниже уже есть страницы, VFS/page store, WAL, recovery, catalog, heap table и transactions v0.
 
-Это всё ещё skeleton: нет SQL transactions, JOIN, UPDATE/DELETE, индексов, optimizer-а и prepared statements.
+Это всё ещё skeleton: нет SQL transactions, JOIN, UPDATE/DELETE, range indexes, optimizer-а, prepared statements и dynamic extensions.
 
 ## Документы первого чтения
 
@@ -68,10 +69,11 @@ SQL shell не является первым milestone. Первый milestone �
 4. `docs/recovery.md`
 5. `docs/roadmap.md`
 6. `docs/non_goals.md`
-7. `docs/extension_abi.md`
-8. `docs/unsafe.md`
-9. `docs/legacy/README.md`
-10. `docs/development/devctl_patches.md`
+7. `docs/extension.md`
+8. `docs/extension_abi.md`
+9. `docs/unsafe.md`
+10. `docs/legacy/README.md`
+11. `docs/development/devctl_patches.md`
 
 ## Процесс разработки
 
@@ -90,7 +92,7 @@ python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.
 
 Теперь `cargo test -p rdbms_sql` проверяет SQL subset: parse, SQL row encoding, CREATE/INSERT/SELECT и простой WHERE. `cargo check --workspace` по-прежнему остаётся общей проверкой целостности workspace.
 
-## Current storage capability after Stage 8
+## Current storage capability after Stage 9
 
 The project now has a small SQL path with persistent heap tables and equality indexes:
 
@@ -101,4 +103,17 @@ INSERT INTO users VALUES (1, 'Ada');
 SELECT name FROM users WHERE id = 1;
 ```
 
-This is still not a full SQL database. The index supports equality lookup for `INT` and `TEXT` keys only.
+This is still not a full SQL database. The index supports equality lookup for `INT` and `TEXT` keys only, and extensions are limited to the built-in static registry.
+
+
+## Current extension capability after Stage 9
+
+The project now has a safe static extension path:
+
+```sql
+LOAD EXTENSION stdlib;
+SELECT upper('ada');
+SELECT length('abc');
+```
+
+This is not native plugin loading. Stage 9 persists extension metadata in the catalog and checks ABI version, but only built-in static extensions can be loaded.

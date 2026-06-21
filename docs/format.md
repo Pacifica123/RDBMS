@@ -309,3 +309,30 @@ Supported key encodings:
 ```
 
 The format is versioned separately from the page header. Stage 8 does not define range-scan cursors, delete records or uniqueness metadata.
+
+## Extension catalog metadata v0
+
+Stage 9 extends the catalog record with an optional extension metadata suffix. Older catalog records without this suffix are still decoded as having zero installed extensions.
+
+After relation entries, new catalog records append:
+
+```text
+extension_count: u32
+extensions: repeated extension entry
+```
+
+Extension entry v0:
+
+```text
+name: string16
+abi_version: u32
+kind: string16
+```
+
+For the built-in Stage 9 path the only supported kind is:
+
+```text
+static
+```
+
+The catalog format version remains `1` because the decoder accepts both the Stage 8 record without extension metadata and the Stage 9 record with the optional suffix.

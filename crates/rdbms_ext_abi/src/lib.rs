@@ -3,6 +3,11 @@
 /// ABI version supported by this crate.
 pub const RDBMS_EXT_ABI_VERSION: u32 = 1;
 
+/// Return true when an extension ABI version is supported by this build.
+pub fn abi_version_supported(version: u32) -> bool {
+    version == RDBMS_EXT_ABI_VERSION
+}
+
 /// Status code returned through the C-compatible extension boundary.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

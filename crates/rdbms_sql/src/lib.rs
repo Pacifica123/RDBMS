@@ -1,4 +1,4 @@
-//! Minimal SQL subset for the Stage 8 storage stack.
+//! Minimal SQL subset for the Stage 9 storage stack.
 //!
 //! This crate intentionally implements a very small SQL-facing layer over
 //! `rdbms_tx::TransactionalStore`. It is not a full SQL parser, binder or
@@ -8,12 +8,15 @@
 //! CREATE TABLE name (column TYPE, ...)
 //! INSERT INTO name VALUES (literal, ...)
 //! CREATE INDEX name ON table(column)
+//! LOAD EXTENSION stdlib
+//! SELECT function(literal, ...)
 //! SELECT * FROM name [WHERE column = literal]
 //! SELECT column, ... FROM name [WHERE column = literal]
 //! ```
 
 use rdbms_catalog::{ColumnDef, RelationInfo};
 use rdbms_core::{ColumnInfo, DbError, DbResult, ExecResult, Value};
+use rdbms_extension::{builtin_extension_descriptor, registry_from_installed_extensions};
 use rdbms_index::IndexKey;
 use rdbms_tx::TransactionalStore;
 use rdbms_vfs::VfsFile;
@@ -25,7 +28,7 @@ const TAG_INTEGER: u8 = 1;
 const TAG_TEXT: u8 = 2;
 const TAG_DOUBLE: u8 = 3;
 
-/// Parsed statement for the Stage 8 SQL subset.
+/// Parsed statement for the Stage 9 SQL subset.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statement {
     /// `CREATE TABLE name (column TYPE, ...)`.
@@ -51,6 +54,18 @@ pub enum Statement {
         /// Indexed column name.
         column: String,
     },
+    /// `LOAD EXTENSION name`.
+    LoadExtension {
+        /// Static extension name.
+        name: String,
+    },
+    /// `SELECT function(literal, ...)` without a FROM clause.
+    SelectFunction {
+        /// Scalar function name.
+        name: String,
+        /// Literal arguments.
+        args: Vec<Value>,
+    },
     /// `SELECT ... FROM name [WHERE column = literal]`.
     Select {
         /// Selected columns, or all columns.
@@ -71,7 +86,7 @@ pub enum Projection {
     Columns(Vec<String>),
 }
 
-/// Equality predicate supported by Stage 8.
+/// Equality predicate supported by Stage 9.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Selection {
     /// Predicate column.
@@ -90,7 +105,7 @@ pub fn parse_statement(sql: &str) -> DbResult<Statement> {
 
 /// Execute one SQL statement against a transactional store.
 ///
-/// Positional parameters are deliberately rejected in Stage 7. They become part
+/// Positional parameters are deliberately rejected in Stage 9. They become part
 /// of a later binder/executor milestone.
 pub fn execute<F: VfsFile>(
     store: &mut TransactionalStore<F>,
@@ -99,7 +114,7 @@ pub fn execute<F: VfsFile>(
 ) -> DbResult<ExecResult> {
     if !params.is_empty() {
         return Err(DbError::User(
-            "SQL parameters are not supported in Stage 8".to_string(),
+            "SQL parameters are not supported in Stage 9".to_string(),
         ));
     }
 
@@ -112,6 +127,8 @@ pub fn execute<F: VfsFile>(
         Statement::CreateIndex { name, table, column } => {
             execute_create_index(store, &name, &table, &column)
         }
+        Statement::LoadExtension { name } => execute_load_extension(store, &name),
+        Statement::SelectFunction { name, args } => execute_select_function(store, &name, &args),
         Statement::Select {
             projection,
             table,
@@ -225,6 +242,51 @@ pub fn decode_row(bytes: &[u8]) -> DbResult<Vec<Value>> {
 
     cursor.finish()?;
     Ok(values)
+}
+
+fn execute_load_extension<F: VfsFile>(
+    store: &mut TransactionalStore<F>,
+    name: &str,
+) -> DbResult<ExecResult> {
+    let descriptor = builtin_extension_descriptor(name)?;
+    store.register_extension_autocommit(
+        descriptor.name.to_string(),
+        descriptor.abi_version,
+        descriptor.kind.as_str().to_string(),
+    )?;
+    Ok(ExecResult::StatementComplete { rows_affected: 0 })
+}
+
+fn execute_select_function<F: VfsFile>(
+    store: &TransactionalStore<F>,
+    name: &str,
+    args: &[Value],
+) -> DbResult<ExecResult> {
+    let registry = registry_from_installed_extensions(
+        store
+            .catalog()
+            .extensions()
+            .iter()
+            .map(|extension| {
+                (
+                    extension.name.as_str(),
+                    extension.abi_version,
+                    extension.kind.as_str(),
+                )
+            }),
+    )?;
+    let value = registry.call_scalar(name, args)?;
+    let function = registry
+        .scalar_function(name)
+        .ok_or(DbError::InternalInvariant("function disappeared after call"))?;
+    let type_name = scalar_result_type(function.return_type, &value);
+    Ok(ExecResult::Query {
+        columns: vec![ColumnInfo {
+            name: function.name.to_string(),
+            type_name,
+        }],
+        rows: vec![vec![value]],
+    })
 }
 
 fn execute_insert<F: VfsFile>(
@@ -490,6 +552,19 @@ fn sql_values_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
+
+fn scalar_result_type(declared: &str, value: &Value) -> String {
+    if declared != "DYNAMIC" {
+        return declared.to_string();
+    }
+    match value {
+        Value::Null => "NULL".to_string(),
+        Value::Integer(_) => "INT".to_string(),
+        Value::Text(_) => "TEXT".to_string(),
+        Value::Double(_) => "DOUBLE".to_string(),
+    }
+}
+
 fn normalize_identifier(identifier: String) -> String {
     identifier.to_ascii_lowercase()
 }
@@ -699,10 +774,12 @@ impl Parser {
             }
         } else if self.consume_keyword("INSERT") {
             self.parse_insert()
+        } else if self.consume_keyword("LOAD") {
+            self.parse_load_extension()
         } else if self.consume_keyword("SELECT") {
             self.parse_select()
         } else {
-            Err(DbError::User("expected CREATE, INSERT or SELECT".to_string()))
+            Err(DbError::User("expected CREATE, INSERT, LOAD or SELECT".to_string()))
         }
     }
 
@@ -757,7 +834,17 @@ impl Parser {
         Ok(Statement::Insert { table, values })
     }
 
+    fn parse_load_extension(&mut self) -> DbResult<Statement> {
+        self.expect_keyword("EXTENSION")?;
+        let name = normalize_identifier(self.expect_identifier("extension name")?);
+        Ok(Statement::LoadExtension { name })
+    }
+
     fn parse_select(&mut self) -> DbResult<Statement> {
+        if self.peek_is_function_call() {
+            return self.parse_select_function();
+        }
+
         let projection = if self.consume_token(&Token::Star) {
             Projection::All
         } else {
@@ -790,6 +877,23 @@ impl Parser {
             table,
             selection,
         })
+    }
+
+    fn parse_select_function(&mut self) -> DbResult<Statement> {
+        let name = normalize_identifier(self.expect_identifier("function name")?);
+        self.expect_token(Token::LParen, "expected '(' after function name")?;
+        let mut args = Vec::new();
+        if !self.consume_token(&Token::RParen) {
+            loop {
+                args.push(self.parse_literal()?);
+                if self.consume_token(&Token::Comma) {
+                    continue;
+                }
+                self.expect_token(Token::RParen, "expected ')' after function arguments")?;
+                break;
+            }
+        }
+        Ok(Statement::SelectFunction { name, args })
     }
 
     fn parse_literal(&mut self) -> DbResult<Value> {
@@ -886,6 +990,19 @@ impl Parser {
         } else {
             &self.tokens[self.tokens.len() - 1]
         }
+    }
+
+    fn peek_n(&self, n: usize) -> &Token {
+        let index = self.offset.saturating_add(n);
+        if index < self.tokens.len() {
+            &self.tokens[index]
+        } else {
+            &self.tokens[self.tokens.len() - 1]
+        }
+    }
+
+    fn peek_is_function_call(&self) -> bool {
+        matches!(self.peek(), Token::Ident(_)) && matches!(self.peek_n(1), Token::LParen)
     }
 }
 
@@ -1001,6 +1118,23 @@ mod tests {
                 column: "id".to_string(),
             }
         );
+
+        let load = parse_statement("LOAD EXTENSION stdlib")?;
+        assert_eq!(
+            load,
+            Statement::LoadExtension {
+                name: "stdlib".to_string(),
+            }
+        );
+
+        let function = parse_statement("SELECT upper('ada')")?;
+        assert_eq!(
+            function,
+            Statement::SelectFunction {
+                name: "upper".to_string(),
+                args: vec![Value::Text("ada".to_string())],
+            }
+        );
         Ok(())
     }
 
@@ -1060,6 +1194,29 @@ mod tests {
                     type_name: "TEXT".to_string(),
                 }],
                 rows: vec![vec![Value::Text("Grace".to_string())]],
+            }
+        );
+
+        cleanup(paths);
+        Ok(())
+    }
+
+    #[test]
+    fn executes_static_extension_scalar_function() -> DbResult<()> {
+        let paths = temp_paths("extension_scalar");
+        let vfs = StdVfs::new();
+        let mut store = open_transactional_store(&vfs, &paths.0, &paths.1)?;
+
+        execute(&mut store, "LOAD EXTENSION stdlib", &[])?;
+        let result = execute(&mut store, "SELECT upper('ada')", &[])?;
+        assert_eq!(
+            result,
+            ExecResult::Query {
+                columns: vec![ColumnInfo {
+                    name: "upper".to_string(),
+                    type_name: "TEXT".to_string(),
+                }],
+                rows: vec![vec![Value::Text("ADA".to_string())]],
             }
         );
 

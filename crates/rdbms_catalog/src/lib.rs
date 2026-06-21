@@ -70,6 +70,28 @@ impl ColumnDef {
     }
 }
 
+/// Persisted extension metadata stored in the catalog page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtensionInfo {
+    /// Extension name.
+    pub name: String,
+    /// ABI version accepted when the extension was installed.
+    pub abi_version: u32,
+    /// Loading kind, for example `static`.
+    pub kind: String,
+}
+
+impl ExtensionInfo {
+    /// Create extension metadata.
+    pub fn new(name: impl Into<String>, abi_version: u32, kind: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            abi_version,
+            kind: kind.into(),
+        }
+    }
+}
+
 /// Heap storage metadata for one relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeapStorage {
@@ -215,6 +237,7 @@ pub struct Catalog {
     next_relation_id: u64,
     next_page_id: u64,
     relations: Vec<RelationInfo>,
+    extensions: Vec<ExtensionInfo>,
 }
 
 impl Catalog {
@@ -224,6 +247,7 @@ impl Catalog {
             next_relation_id: 1,
             next_page_id: 1,
             relations: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 
@@ -272,6 +296,45 @@ impl Catalog {
     /// Return all relation records in catalog order.
     pub fn relations(&self) -> &[RelationInfo] {
         &self.relations
+    }
+
+
+    /// Return installed extension metadata records in catalog order.
+    pub fn extensions(&self) -> &[ExtensionInfo] {
+        &self.extensions
+    }
+
+    /// Find installed extension metadata by name.
+    pub fn extension_by_name(&self, name: &str) -> Option<&ExtensionInfo> {
+        self.extensions
+            .iter()
+            .find(|extension| extension.name == name)
+    }
+
+    /// Register extension metadata. Re-registering the same extension is idempotent.
+    pub fn register_extension_metadata(
+        &mut self,
+        name: impl Into<String>,
+        abi_version: u32,
+        kind: impl Into<String>,
+    ) -> DbResult<bool> {
+        let name = name.into();
+        let kind = kind.into();
+        validate_name("extension", &name)?;
+        validate_name("extension kind", &kind)?;
+
+        if let Some(existing) = self.extension_by_name(&name) {
+            if existing.abi_version == abi_version && existing.kind == kind {
+                return Ok(false);
+            }
+            return Err(DbError::User(format!(
+                "extension already registered with different metadata: {name}"
+            )));
+        }
+
+        self.extensions
+            .push(ExtensionInfo::new(name, abi_version, kind));
+        Ok(true)
     }
 
     /// Find a relation by id.
@@ -686,6 +749,13 @@ fn encode_catalog(catalog: &Catalog) -> DbResult<Vec<u8>> {
         }
     }
 
+    write_u32_len(&mut bytes, catalog.extensions.len(), "extension count")?;
+    for extension in &catalog.extensions {
+        write_string(&mut bytes, &extension.name)?;
+        write_u32(&mut bytes, extension.abi_version);
+        write_string(&mut bytes, &extension.kind)?;
+    }
+
     Ok(bytes)
 }
 
@@ -752,11 +822,29 @@ fn decode_catalog(bytes: &[u8]) -> DbResult<Catalog> {
         });
     }
 
+    let extensions = if cursor.is_finished() {
+        Vec::new()
+    } else {
+        let extension_count = cursor.read_u32()?;
+        let extension_count = usize::try_from(extension_count).map_err(|_| {
+            DbError::Corruption("catalog extension count is too large".to_string())
+        })?;
+        let mut extensions = Vec::with_capacity(extension_count);
+        for _ in 0..extension_count {
+            let name = cursor.read_string()?;
+            let abi_version = cursor.read_u32()?;
+            let kind = cursor.read_string()?;
+            extensions.push(ExtensionInfo::new(name, abi_version, kind));
+        }
+        extensions
+    };
+
     cursor.finish()?;
     Ok(Catalog {
         next_relation_id,
         next_page_id,
         relations,
+        extensions,
     })
 }
 
@@ -808,6 +896,11 @@ fn write_u16_len(bytes: &mut Vec<u8>, value: usize, field: &str) -> DbResult<()>
         .map_err(|_| DbError::User(format!("{field} does not fit into u16")))?;
     write_u16(bytes, value);
     Ok(())
+}
+
+
+fn write_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
 }
 
 fn write_u32_len(bytes: &mut Vec<u8>, value: usize, field: &str) -> DbResult<()> {
@@ -875,6 +968,10 @@ impl<'a> DecodeCursor<'a> {
         String::from_utf8(bytes.to_vec()).map_err(|_| {
             DbError::Corruption("catalog string is not valid UTF-8".to_string())
         })
+    }
+
+    fn is_finished(&self) -> bool {
+        self.offset == self.bytes.len()
     }
 
     fn finish(&self) -> DbResult<()> {
@@ -998,6 +1095,34 @@ mod tests {
         assert_eq!(storage.table_id(), table_id);
         assert_eq!(storage.column_name(), "id");
         assert_eq!(storage.root_page_id(), root_page_id);
+
+        cleanup_temp_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn persists_extension_metadata() -> DbResult<()> {
+        let path = temp_db_path("extension_metadata");
+        let vfs = StdVfs::new();
+
+        {
+            let mut store = open_catalog_store(&vfs, &path)?;
+            assert!(store
+                .catalog
+                .register_extension_metadata("stdlib", 1, "static")?);
+            store.catalog.save(&mut store.page_file)?;
+            store.sync_data()?;
+        }
+
+        {
+            let store = open_catalog_store(&vfs, &path)?;
+            let extension = store
+                .catalog()
+                .extension_by_name("stdlib")
+                .ok_or(DbError::InternalInvariant("extension metadata was not reopened"))?;
+            assert_eq!(extension.abi_version, 1);
+            assert_eq!(extension.kind, "static");
+        }
 
         cleanup_temp_file(path);
         Ok(())

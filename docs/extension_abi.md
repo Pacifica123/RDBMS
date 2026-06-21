@@ -44,3 +44,18 @@ unsafe_native
 ## 6. WASM-track
 
 WASM может стать более безопасной альтернативой native plugins для части расширений. Но он не отменяет need в host API, versioning и capabilities.
+
+## 7. Stage 9 runtime boundary
+
+Stage 9 does not load native plugins. It adds a safe static registry in `rdbms_extension` and uses `rdbms_ext_abi::RDBMS_EXT_ABI_VERSION` only as a version check boundary.
+
+Runtime flow:
+
+```text
+builtin descriptor
+  -> abi_version_supported(version)
+  -> ExtensionRegistry
+  -> scalar function call
+```
+
+The native `RdbmsExtensionDescriptor` remains a sketch for future plugin loading. No raw pointer from that descriptor is dereferenced in Stage 9.

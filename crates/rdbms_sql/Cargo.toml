@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 rdbms_catalog = { path = "../rdbms_catalog" }
 rdbms_core = { path = "../rdbms_core" }
+rdbms_extension = { path = "../rdbms_extension" }
 rdbms_index = { path = "../rdbms_index" }
 rdbms_tx = { path = "../rdbms_tx" }
 rdbms_vfs = { path = "../rdbms_vfs" }

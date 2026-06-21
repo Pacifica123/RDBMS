@@ -192,3 +192,17 @@ commit
 ```
 
 Rollback discards staged index pages. There is still no MVCC, no delete maintenance and no index visibility map.
+
+## Stage 9 — extension metadata transactions
+
+Installing a static extension changes the catalog page, so it uses the same transaction machinery as table/index metadata:
+
+```text
+TransactionalStore::register_extension_autocommit
+  -> Transaction::register_extension
+  -> Catalog::register_extension_metadata
+  -> dirty catalog page
+  -> WAL PageImage + CommitTx
+```
+
+Rollback drops staged extension metadata the same way it drops staged table/index metadata.

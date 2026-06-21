@@ -248,9 +248,9 @@ SELECT ... WHERE indexed_column = literal использует index, если �
 нет MVCC visibility в index layer.
 ```
 
-## Stage 9 — planner and execution v0
+## Future — planner and execution v0
 
-Статус: следующий патч / не начато.
+Статус: отложено после Stage 9 extension v0.
 
 Цель:
 
@@ -271,12 +271,30 @@ index verifier.
 
 ## Stage 9 — extension v0
 
+Статус: выполнено.
+
+Реализовано:
+
 ```text
+rdbms_extension crate;
 static scalar function registry;
+built-in stdlib extension;
+ABI version check через rdbms_ext_abi;
 extension catalog metadata;
-ABI version check;
-Linux native plugin experiment;
-Android static registry path.
+LOAD EXTENSION stdlib;
+SELECT scalar_function(literal, ...) без FROM;
+WAL-backed install через rdbms_tx.
+```
+
+Ограничения:
+
+```text
+нет dynamic loading;
+нет Linux native plugin loader;
+нет WASM runtime;
+нет aggregate/table functions;
+нет function calls over table columns;
+нет extension unload/dependency tracking.
 ```
 
 ## Stage 10 — platform ports

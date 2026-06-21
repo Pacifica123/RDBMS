@@ -146,3 +146,25 @@ root_page_id  current B+Tree root page
 The catalog is the only owner of the root page id. When root split happens, transaction code updates catalog metadata and marks the catalog page dirty.
 
 Stage 8 supports one-column indexes only. Duplicate indexes on the same table column are rejected by catalog metadata checks.
+
+## Extension metadata v0
+
+Stage 9 stores installed extension metadata in the same catalog page record:
+
+```text
+ExtensionInfo {
+  name,
+  abi_version,
+  kind
+}
+```
+
+The first supported installed extension is:
+
+```text
+stdlib, abi_version = 1, kind = static
+```
+
+`Catalog::register_extension_metadata` is idempotent when the same name/version/kind is registered again. A different version or kind for an existing name is rejected.
+
+Extension metadata changes should go through `rdbms_tx::TransactionalStore::register_extension_autocommit` or an explicit transaction, not through direct page writes.

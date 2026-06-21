@@ -28,6 +28,14 @@ name = "rdbms_ext_abi"
 version = "0.1.0"
 
 [[package]]
+name = "rdbms_extension"
+version = "0.1.0"
+dependencies = [
+ "rdbms_core",
+ "rdbms_ext_abi",
+]
+
+[[package]]
 name = "rdbms_index"
 version = "0.1.0"
 dependencies = [
@@ -58,6 +66,7 @@ version = "0.1.0"
 dependencies = [
  "rdbms_catalog",
  "rdbms_core",
+ "rdbms_extension",
  "rdbms_index",
  "rdbms_tx",
  "rdbms_vfs",

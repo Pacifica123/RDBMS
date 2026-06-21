@@ -134,6 +134,20 @@ impl<F: VfsFile> TransactionalStore<F> {
         Ok(row_id)
     }
 
+
+    /// Register extension metadata in its own transaction.
+    pub fn register_extension_autocommit(
+        &mut self,
+        name: impl Into<String>,
+        abi_version: u32,
+        kind: impl Into<String>,
+    ) -> DbResult<bool> {
+        let mut transaction = self.begin()?;
+        let inserted = transaction.register_extension(name, abi_version, kind)?;
+        transaction.commit()?;
+        Ok(inserted)
+    }
+
     /// Force both database and WAL files through their VFS sync boundaries.
     pub fn sync_data(&mut self) -> DbResult<()> {
         self.store.sync_data()?;
@@ -197,6 +211,23 @@ impl<'a, F: VfsFile> Transaction<'a, F> {
     /// Borrow the transaction-local catalog snapshot.
     pub fn catalog(&self) -> &Catalog {
         &self.working_catalog
+    }
+
+    /// Register extension metadata inside this transaction.
+    pub fn register_extension(
+        &mut self,
+        name: impl Into<String>,
+        abi_version: u32,
+        kind: impl Into<String>,
+    ) -> DbResult<bool> {
+        self.ensure_active()?;
+        let inserted = self
+            .working_catalog
+            .register_extension_metadata(name, abi_version, kind)?;
+        if inserted {
+            self.mark_catalog_dirty()?;
+        }
+        Ok(inserted)
     }
 
     /// Create a heap table inside this transaction.
@@ -474,6 +505,25 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].row_id, row_id);
         assert_eq!(rows[0].bytes, b"first event".to_vec());
+
+        cleanup_database_paths(paths);
+        Ok(())
+    }
+
+    #[test]
+    fn autocommit_registers_extension_metadata() -> DbResult<()> {
+        let paths = temp_database_paths("register_extension");
+        let vfs = StdVfs::new();
+        let mut store = open_transactional_store(&vfs, paths.data_path(), paths.wal_path())?;
+
+        assert!(store.register_extension_autocommit("stdlib", 1, "static")?);
+        assert!(!store.register_extension_autocommit("stdlib", 1, "static")?);
+        let extension = store
+            .catalog()
+            .extension_by_name("stdlib")
+            .ok_or(DbError::InternalInvariant("extension metadata missing"))?;
+        assert_eq!(extension.abi_version, 1);
+        assert_eq!(extension.kind, "static");
 
         cleanup_database_paths(paths);
         Ok(())

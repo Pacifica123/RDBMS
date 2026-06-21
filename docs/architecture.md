@@ -54,11 +54,15 @@ Transactions v0. Слой владеет `CatalogStore` и `WalWriter`, даёт
 
 ### rdbms_sql
 
-SQL subset v0. Слой содержит маленький lexer/parser, `Statement` AST, SQL row encoding v0 и прямой executor поверх `rdbms_tx::TransactionalStore`. Сейчас поддержаны `CREATE TABLE`, `INSERT INTO ... VALUES ...`, `SELECT *`, `SELECT column list` и `WHERE column = literal`. Binder, optimizer, prepared statements и полноценный operator tree ещё не реализованы.
+SQL subset v0. Слой содержит маленький lexer/parser, `Statement` AST, SQL row encoding v0 и прямой executor поверх `rdbms_tx::TransactionalStore`. Сейчас поддержаны `CREATE TABLE`, `INSERT INTO ... VALUES ...`, `CREATE INDEX`, `LOAD EXTENSION`, scalar `SELECT function(literal, ...)`, `SELECT *`, `SELECT column list` и `WHERE column = literal`. Binder, optimizer, prepared statements и полноценный operator tree ещё не реализованы.
 
 ### rdbms_ext_abi
 
 Стабильная внешняя граница расширений. Наружу нельзя отдавать сырой Rust trait как долгоживущий plugin contract. Для native plugins нужна C-compatible ABI или другой стабильный слой, например WASM.
+
+### rdbms_extension
+
+Static extension registry v0. Текущий слой регистрирует built-in extension descriptors, проверяет ABI version и вызывает scalar functions через безопасные Rust function pointers. Dynamic native plugins пока не загружаются.
 
 ### rdbms_cli
 
@@ -123,3 +127,25 @@ rdbms_tx
 ```
 
 The index layer does not own files and does not bypass transactions. It receives a small page-store interface from `rdbms_tx`, so index changes participate in the same dirty-page staging and WAL full-page-image commit protocol as catalog and heap changes.
+
+## Stage 9 — extension v0
+
+Stage 9 inserts a safe static extension path above SQL and catalog metadata.
+
+```text
+rdbms_sql
+  |
+  +-- LOAD EXTENSION stdlib
+  +-- SELECT scalar_function(literal, ...)
+
+rdbms_extension
+  |
+  +-- static registry
+  +-- ABI version check through rdbms_ext_abi
+
+rdbms_catalog
+  |
+  +-- persisted extension metadata in catalog page 0
+```
+
+Native plugins are still not loaded at runtime. The project now has an ABI descriptor sketch plus a safe built-in registry path. This keeps extension behavior testable without crossing unsafe FFI boundaries.
