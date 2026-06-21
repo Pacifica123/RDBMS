@@ -5,7 +5,7 @@
 Проект развивается не от красивого SQL shell, а от проверяемого correctness-контура:
 
 ```text
-байты → страницы → VFS/page store → WAL → recovery → каталог → heap table → транзакция → индекс → SQL → расширения → переносимость
+байты → страницы → VFS/page store → WAL → recovery → каталог → heap table → транзакция → SQL subset → индекс → расширения → переносимость
 ```
 
 ## Stage 0 — architecture-first reboot
@@ -187,16 +187,34 @@ recovery test for committed catalog/heap pages from WAL.
 
 ## Stage 7 — SQL subset
 
-SQL начинается только после storage/catalog/transaction skeleton.
+Статус: выполнено.
+
+Реализовано:
 
 ```text
-parser adapter;
-binder;
-logical plan;
-SeqScan/Filter/Project;
-INSERT;
-SELECT;
-simple WHERE.
+rdbms_sql crate поверх TransactionalStore;
+lexer/parser для одного statement;
+Statement AST;
+CREATE TABLE;
+INSERT INTO ... VALUES ...;
+SELECT * и SELECT column list;
+simple WHERE column = literal;
+SQL row payload v0 в heap raw bytes;
+materialized ExecResult::Query;
+unit tests на parse/execute.
+```
+
+Ограничения:
+
+```text
+нет SQL BEGIN/COMMIT/ROLLBACK;
+нет INSERT column list;
+нет UPDATE/DELETE;
+нет JOIN/ORDER BY/GROUP BY;
+нет prepared statements/params;
+нет optimizer/logical plan tree;
+нет quoted identifiers;
+нет индексов.
 ```
 
 ## Stage 8 — index v0

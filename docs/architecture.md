@@ -17,7 +17,7 @@ RDBMS — учебно-инженерный проект собственной 
 Новая архитектура строится снизу вверх:
 
 ```text
-байты → страницы → VFS/page store → WAL → recovery → каталог → таблицы → транзакции → индексы → SQL → расширения
+байты → страницы → VFS/page store → WAL → recovery → каталог → таблицы → транзакции → SQL subset → индексы → расширения
 ```
 
 SQL остаётся пользовательским интерфейсом, но не является фундаментом ядра.
@@ -54,7 +54,7 @@ Transactions v0. Слой владеет `CatalogStore` и `WalWriter`, даёт
 
 ### rdbms_sql
 
-Поздний слой. Parser, binder, logical plan, optimizer и executor появляются после минимального storage/catalog/transaction основания.
+SQL subset v0. Слой содержит маленький lexer/parser, `Statement` AST, SQL row encoding v0 и прямой executor поверх `rdbms_tx::TransactionalStore`. Сейчас поддержаны `CREATE TABLE`, `INSERT INTO ... VALUES ...`, `SELECT *`, `SELECT column list` и `WHERE column = literal`. Binder, optimizer, prepared statements и полноценный operator tree ещё не реализованы.
 
 ### rdbms_ext_abi
 

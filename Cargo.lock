@@ -48,7 +48,10 @@ dependencies = [
 name = "rdbms_sql"
 version = "0.1.0"
 dependencies = [
+ "rdbms_catalog",
  "rdbms_core",
+ "rdbms_tx",
+ "rdbms_vfs",
 ]
 
 [[package]]

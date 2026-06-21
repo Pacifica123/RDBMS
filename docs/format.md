@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`, transaction commit ordering v0 в crate `rdbms_tx`. VFS/page store записывает и читает страницы через random-access файл.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`, transaction commit ordering v0 в crate `rdbms_tx`, SQL row payload v0 в crate `rdbms_sql`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -198,6 +198,30 @@ Heap pages не обязаны быть непрерывными. При нех�
 
 `RowId = (PageId, SlotId)`.
 
+
+## SQL row payload v0
+
+Stage 7 не меняет heap page layout. Он определяет SQL-facing payload, который кладётся внутрь raw heap record bytes для таблиц, созданных через SQL API.
+
+```text
+offset  size      field
+0       4         magic = "RDBR"
+4       2         version = 1
+6       2         value_count
+8       variable  value entries
+```
+
+Value entry:
+
+```text
+0 = NULL, no payload
+1 = INTEGER, i64 little-endian
+2 = TEXT, u32 byte_len + UTF-8 bytes
+3 = DOUBLE, f64 little-endian
+```
+
+SQL executor проверяет, что `value_count` совпадает с количеством колонок relation metadata.
+
 ## Что ещё не является форматом БД
 
 Сейчас нет:
@@ -206,16 +230,16 @@ Heap pages не обязаны быть непрерывными. При нех�
 file header bootstrap;
 segment layout;
 free-space map;
-record schema layout;
-SQL-visible table schema semantics;
+general record schema layout beyond SQL row v0;
+full SQL-visible table schema semantics;
 WAL file header;
 page_lsn update API;
 checkpoint state;
 recovery checkpoint position;
-typed record encoding.
+general typed record encoding beyond SQL row v0.
 ```
 
-Следующий практический слой — SQL subset поверх transaction/catalog/heap skeleton.
+Следующий практический слой — index v0 или более полный SQL binder/planner поверх уже существующего SQL subset.
 
 ## Transaction behavior v0
 

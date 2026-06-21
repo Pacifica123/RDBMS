@@ -6,7 +6,7 @@
 
 ## Текущее состояние
 
-Статус: architecture-first reboot, первый storage-кирпич реализован в `rdbms_page`.
+Статус: architecture-first reboot уже дошёл до минимального SQL subset поверх WAL-backed transactions. Проект умеет выполнять ограниченные `CREATE TABLE`, `INSERT INTO ... VALUES ...` и `SELECT` через `rdbms_sql`, но это ещё не полноценная SQL-СУБД.
 
 Старый бакалаврский прототип был полезен как research spike: он нащупал слова `Database`, `Table`, `Column`, `Row`, `Value` и желание иметь SQL-facing API. Но он начинался со строкового SQL-диспетчера, JSON-снимков и in-memory `Vec<Table>`, поэтому не годится как фундамент storage/recovery/transaction architecture.
 
@@ -19,7 +19,8 @@ crates/
   rdbms_page/       page ids, page header, checksum boundary, slotted page sketch
   rdbms_wal/        LSN, WAL records, writer/reader/recovery skeleton
   rdbms_catalog/    системный каталог и relation metadata
-  rdbms_sql/        SQL-facing слой: parser/binder/planner позднее
+  rdbms_tx/         transactions v0 поверх catalog/heap/WAL
+  rdbms_sql/        SQL subset v0: parser, row encoding, direct executor
   rdbms_ext_abi/    стабильная внешняя ABI-граница расширений
   rdbms_cli/        тонкий CLI поверх публичного API
 
@@ -29,6 +30,8 @@ docs/
   format.md
   wal.md
   recovery.md
+  transactions.md
+  sql.md
   extension_abi.md
   roadmap.md
   unsafe.md
@@ -45,7 +48,7 @@ tools/devctl/
 Правильный порядок для этого проекта:
 
 ```text
-байты → страницы → WAL → recovery → каталог → heap table → транзакция → индекс → SQL → расширения → переносимость
+байты → страницы → WAL → recovery → каталог → heap table → транзакция → SQL subset → индекс → расширения → переносимость
 ```
 
 SQL shell не является первым milestone. Первый milestone — создать файл, записать страницу, прочитать страницу, проверить checksum, переоткрыть файл и обнаружить повреждение.
@@ -53,9 +56,9 @@ SQL shell не является первым milestone. Первый milestone �
 
 ## Ближайший реализованный слой
 
-Первый практический слой — `crates/rdbms_page`. Он реализует slotted page фиксированного размера: header, slot directory, вставку variable-size record, чтение по `SlotId`, delete-marker, compaction и checksum validation.
+Текущий верхний слой — `crates/rdbms_sql`. Он даёт маленький SQL subset поверх `rdbms_tx::TransactionalStore`: создание таблицы, вставку literal values и materialized SELECT с простым equality WHERE. Ниже уже есть страницы, VFS/page store, WAL, recovery, catalog, heap table и transactions v0.
 
-Это ещё не таблица и не SQL. Это физическая основа, на которой позже появятся heap table, WAL и recovery.
+Это всё ещё skeleton: нет SQL transactions, JOIN, UPDATE/DELETE, индексов, optimizer-а и prepared statements.
 
 ## Документы первого чтения
 
@@ -85,4 +88,4 @@ cargo check --workspace
 python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json
 ```
 
-Теперь `cargo test -p rdbms_page` проверяет первый реальный storage-инвариант: slotted page умеет вставлять, читать, удалять и уплотнять записи без смены live slot id, а checksum ловит повреждённые bytes. `cargo check --workspace` по-прежнему остаётся общей проверкой целостности workspace.
+Теперь `cargo test -p rdbms_sql` проверяет SQL subset: parse, SQL row encoding, CREATE/INSERT/SELECT и простой WHERE. `cargo check --workspace` по-прежнему остаётся общей проверкой целостности workspace.

@@ -162,3 +162,15 @@ stable TxId persisted across reopen.
 ```
 
 `TxId` пока выдаётся с `1` при каждом open `TransactionalStore`. Это допустимо для skeleton-а, но должно быть заменено persistent allocator-ом до реальной эксплуатации.
+
+## 10. Связь с SQL subset v0
+
+Stage 7 использует `TransactionalStore` как write boundary для SQL statements:
+
+```text
+CREATE TABLE -> create_table_autocommit;
+INSERT INTO ... VALUES -> insert_row_autocommit;
+SELECT -> committed full_scan.
+```
+
+SQL-level `BEGIN`, `COMMIT` и `ROLLBACK` пока не реализованы. Поэтому каждое SQL write statement в Stage 7 является отдельной autocommit transaction.

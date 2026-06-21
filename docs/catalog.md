@@ -2,7 +2,7 @@
 
 ## 1. Назначение
 
-Stage 5 добавляет первый persistent catalog и минимальную heap table API. Это всё ещё внутренний слой, без SQL, транзакций, индексов и схемного binder-а.
+Stage 5 добавляет первый persistent catalog и минимальную heap table API. Stage 7 уже умеет использовать этот catalog через маленький SQL subset, но catalog crate сам остаётся внутренним storage-слоем.
 
 Текущий поток:
 
@@ -86,9 +86,9 @@ RowId = (PageId, SlotId)
 Stage 5 не реализует:
 
 ```text
-SQL CREATE TABLE;
-SQL INSERT/SELECT;
-record schema encoding;
+SQL ALTER/DROP TABLE;
+SQL UPDATE/DELETE;
+general record schema encoding beyond SQL row v0;
 type checking;
 NULL bitmap;
 free-space map;
@@ -119,3 +119,9 @@ CatalogStore::replace_catalog().
 Эти функции нужны не SQL-слою, а transaction manager-у. Он должен уметь собрать новый catalog page image в памяти, записать его в WAL как `PageImage`, а затем установить в data file только после durable commit marker.
 
 Обычные Stage 5 методы `CatalogStore::create_table` и `CatalogStore::insert_row` сохранены для низкоуровневых тестов и прямого storage-доступа. Новый код, которому нужна transaction boundary, должен использовать `rdbms_tx::TransactionalStore`.
+
+## 9. Связь с SQL subset v0
+
+Stage 7 хранит SQL-visible строки как raw heap bytes со своим payload magic `RDBR`. Catalog metadata используется для проверки числа значений, имён колонок и простых SQL type names.
+
+`rdbms_catalog` не парсит SQL и не знает о SQL expressions. Он только хранит relation/column metadata и page ids.

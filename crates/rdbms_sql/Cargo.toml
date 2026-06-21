@@ -4,6 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
+rdbms_catalog = { path = "../rdbms_catalog" }
 rdbms_core = { path = "../rdbms_core" }
+rdbms_tx = { path = "../rdbms_tx" }
+rdbms_vfs = { path = "../rdbms_vfs" }
+
+[lints]
+workspace = true
