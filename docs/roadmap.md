@@ -24,7 +24,7 @@ devctl patch workflow;
 
 ## Stage 1 — page primitives
 
-Статус: текущий патч.
+Статус: выполнено.
 
 Цель: получить первый настоящий кирпич storage engine — slotted page.
 
@@ -52,9 +52,9 @@ unit tests на основные инварианты.
 
 ## Stage 2 — VFS/page store
 
-Следующий хороший патч.
+Статус: выполнено.
 
-Нужно реализовать:
+Реализовано:
 
 ```text
 StdVfs поверх std::fs;
@@ -77,7 +77,7 @@ server mode.
 
 ## Stage 3 — WAL skeleton
 
-После page store.
+Следующий хороший патч.
 
 Нужно реализовать:
 

@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 rdbms_core = { path = "../rdbms_core" }
+rdbms_page = { path = "../rdbms_page" }

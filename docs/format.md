@@ -16,7 +16,7 @@ lsn = u64
 slot_id = u16
 ```
 
-Сейчас реализован только in-memory page buffer в crate `rdbms_page`. VFS и файл базы будут подключаться следующим слоем.
+Сейчас реализованы in-memory page buffer в crate `rdbms_page` и первый disk-backed слой в crate `rdbms_vfs`. VFS/page store записывает и читает страницы через random-access файл.
 
 ## Layout страницы v1
 
@@ -84,12 +84,25 @@ Checksum пока простой: сумма байтов с wraparound. Пол�
 
 Это слабый алгоритм. Его назначение сейчас — зафиксировать саму границу проверки повреждений. Перед реальным recovery нужно заменить алгоритм на более сильный и явно описать совместимость формата.
 
+
+## Database file v0
+
+Первый файл базы — это простой массив страниц фиксированного размера. Страница с `page_id = N` хранится по смещению:
+
+```text
+offset = N * PAGE_SIZE
+```
+
+На этом этапе ещё нет allocator, free-space map, file header bootstrap и catalog bootstrap. `PageType::FileHeader` уже зарезервирован в формате страницы, но `rdbms_vfs` пока не создаёт специальную header page автоматически.
+
+`PageFile::write_page` перед записью проверяет checksum и совпадение `PageId` в заголовке. `PageFile::read_page` читает ровно `PAGE_SIZE` байт, строит `Page::from_bytes`, проверяет checksum и отдельно проверяет, что запрошенный `PageId` совпал с `page_id` в заголовке. Повреждённая страница после reopen должна возвращать `DbError::Corruption`.
+
 ## Что ещё не является форматом БД
 
 Сейчас нет:
 
 ```text
-file header page;
+file header bootstrap;
 segment layout;
 free-space map;
 record schema layout;
@@ -98,4 +111,4 @@ checkpoint state;
 catalog bootstrap pages.
 ```
 
-Следующий практический слой — VFS/page store: создать файл, записать страницу, прочитать страницу, проверить checksum после reopen и обнаружить повреждённую страницу.
+Следующий практический слой — WAL skeleton: записывать page image records, фиксировать commit marker и обнаруживать обрезанный WAL.
