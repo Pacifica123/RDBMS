@@ -4,6 +4,16 @@ RDBMS — учебно-инженерная СУБД на Rust. Проект с�
 
 Это не обёртка над SQLite/PostgreSQL и не попытка сразу сделать промышленную СУБД. Текущая цель проще: маленькое ядро, где каждый слой можно проверить тестами и где понятно, какие гарантии уже есть, а каких ещё нет.
 
+## Версия
+
+Текущая версия проекта после введения devctl patch-quantum versioning:
+
+```text
+0.10.0.1
+```
+
+`0.10.0` отражает состояние после Этапа 10. Последний разряд `1` — первый успешный devctl-квант после включения версионирования. Источник истины: `VERSION`, `VERSION.json` и `CHANGELOG.md`. Правила описаны в `docs/development/versioning.md`.
+
 ## Текущий статус
 
 Проект дошёл до Этап 10. Сейчас есть:
@@ -87,7 +97,8 @@ SQL shell не является первым доказательством СУ
 9. `docs/platform.md` — Windows/Android/CI boundary.
 10. `docs/roadmap.md` — что уже сделано и что дальше.
 11. `docs/non_goals.md` — что проект сознательно не обещает.
-12. `docs/development/devctl_patches.md` — как готовить патчи.
+12. `docs/development/versioning.md` — как читать и bump-ать версию.
+13. `docs/development/devctl_patches.md` — как готовить патчи.
 
 ## Проверки
 
@@ -96,6 +107,7 @@ SQL shell не является первым доказательством СУ
 ```bash
 cargo check --workspace
 cargo test --workspace
+python tools/devctl/validate_version_files.py
 python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json
 ```
 

@@ -13,7 +13,7 @@ patch.zip → plan → apply → checks → commit → archive/report
 ## 2. Структура патча
 
 ```text
-patch_YYYYMMDD_HHMMSS_short_slug.zip
+patch_YYYYMMDD_HHMMSS_pNNNNNN_short_slug_vMAJOR_MINOR_MICRO_QUANTUM.zip
   manifest.json
   PATCH_SUMMARY.md
   files/
@@ -143,13 +143,44 @@ master
 }
 ```
 
-## 6. Проверки
+
+## 6. Версия патча
+
+Каждый devctl-патч после включения версионирования должен обновлять:
+
+```text
+VERSION
+VERSION.json
+CHANGELOG.md
+```
+
+И должен содержать в `manifest.json` блок `version`:
+
+```json
+"version": {
+  "schema": "devctl-version-intent-v1",
+  "base": "0.10.0.1",
+  "next": "0.10.0.2",
+  "bump": "quantum",
+  "quantum": 2,
+  "reason": "Документационный патч без изменения поведения проекта.",
+  "publicSurface": ["docs"],
+  "compatibility": "compatible"
+}
+```
+
+`version.base` должен совпадать с текущим `VERSION.json.version`. `version.next` должен совпадать с новой версией в `VERSION` и `VERSION.json`. `version.quantum` должен совпадать с последним разрядом `version.next`.
+
+Правила bump описаны в `docs/development/versioning.md`.
+
+## 7. Проверки
 
 Обычные проверки для RDBMS:
 
 ```bash
 cargo check --workspace
 cargo test --workspace
+python tools/devctl/validate_version_files.py
 python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json
 ```
 
@@ -161,7 +192,7 @@ Manifest самого патча нужно проверить отдельно:
 python tools/devctl/validate_patch_manifest.py path/to/manifest.json
 ```
 
-## 7. `PATCH_SUMMARY.md`
+## 8. `PATCH_SUMMARY.md`
 
 Summary должен отвечать на вопросы:
 
@@ -172,7 +203,7 @@ Summary должен отвечать на вопросы:
 - какие проверки прогнаны;
 - есть ли особые инструкции применения.
 
-## 8. Частые ошибки
+## 9. Частые ошибки
 
 Ошибка: `base.branch must be 'master'`.
 
@@ -190,7 +221,7 @@ Summary должен отвечать на вопросы:
 
 Причина: файлы положены не в тот `filesRoot` или архив собран неверно.
 
-## 9. Практическое правило
+## 10. Практическое правило
 
 Хороший patch.zip должен быть таким, чтобы другой человек мог открыть его без контекста и понять:
 

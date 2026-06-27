@@ -1,0 +1,15 @@
+{
+  "schema": "devctl-version-v1",
+  "version": "0.10.0.1",
+  "semver": "0.10.0",
+  "major": 0,
+  "minor": 10,
+  "micro": 0,
+  "quantum": 1,
+  "released": false,
+  "updatedAt": "2026-06-27T00:00:00Z",
+  "lastPatchId": "p000001-versioning-bootstrap-v0-10-0-1",
+  "lastPatchSha256": null,
+  "bootstrap": true,
+  "notes": "Первый квант после введения devctl patch-quantum versioning. Предыдущие devctl-патчи считаются pre-versioning history и не получают задним числом quantum-номера."
+}

@@ -1,23 +1,29 @@
 {
   "formatVersion": 1,
-  "patchId": "YYYY-MM-DD-rdbms-short-slug",
+  "patchId": "p000002-short-slug-v0-10-0-2",
   "title": "Краткое название изменения",
   "summary": "Что меняется и зачем.",
   "kind": "development-step",
-  "createdAt": "YYYY-MM-DDT00:00:00Z",
+  "createdAt": "2026-06-27T00:00:00Z",
+  "version": {
+    "schema": "devctl-version-intent-v1",
+    "base": "0.10.0.1",
+    "next": "0.10.0.2",
+    "bump": "quantum",
+    "quantum": 2,
+    "reason": "Обычный совместимый devctl-патч после включения версионирования.",
+    "publicSurface": [
+      "docs"
+    ],
+    "compatibility": "compatible"
+  },
   "base": {
     "branch": "master",
     "expectedHead": null
   },
   "apply": {
     "filesRoot": "files",
-    "delete": [
-      {
-        "path": "path/to/remove",
-        "recursive": false,
-        "required": false
-      }
-    ]
+    "delete": []
   },
   "checks": [
     {
@@ -30,6 +36,15 @@
       "timeoutSeconds": 300
     },
     {
+      "name": "Version files are consistent",
+      "cwd": ".",
+      "command": "python tools/devctl/validate_version_files.py",
+      "requiredCommands": [
+        "python"
+      ],
+      "timeoutSeconds": 120
+    },
+    {
       "name": "Devctl manifest template follows project rules",
       "cwd": ".",
       "command": "python tools/devctl/validate_patch_manifest.py .devctl/templates/patch_manifest.template.json",
@@ -40,14 +55,14 @@
     }
   ],
   "commit": {
-    "message": "scope: concise change summary"
+    "message": "scope: concise change summary v0.10.0.2\n\nVersion-Before: 0.10.0.1\nVersion-After: 0.10.0.2\nVersion-Bump: quantum\nPatch-Quantum: 2"
   },
   "push": {
     "remote": "origin",
     "branch": "master"
   },
   "archive": {
-    "nameSlug": "short-slug",
+    "nameSlug": "short-slug-v0-10-0-2",
     "exclude": [
       ".git/",
       "target/",
