@@ -1,340 +1,301 @@
-# ROADMAP — порядок развития RDBMS
+# План развития RDBMS
 
 ## Принцип
 
-Проект развивается не от красивого SQL shell, а от проверяемого correctness-контура:
+Проект развивается от проверяемого storage correctness, а не от ширины SQL-синтаксиса.
+
+Основная цепочка:
 
 ```text
-байты → страницы → VFS/page store → WAL → recovery → каталог → heap table → транзакция → SQL subset → индекс → расширения → переносимость
+байты → страницы → VFS/page store → WAL → recovery → catalog → heap table → transactions → SQL subset → index → extensions → platform ports
 ```
+
+## Текущая точка
+
+Реализованы этапы 0–10. Текущий верхний слой — маленький SQL subset с persistent heap tables, B+Tree equality indexes, static extensions и платформенные smoke-проверки.
+
+Проект всё ещё находится в учебно-инженерной стадии. Следующие этапы должны усиливать корректность, тестирование и понятность API, а не резко расширять SQL.
 
 ## Stage 0 — architecture-first reboot
 
-Статус: выполнено.
+Статус: сделано.
 
-Сделано:
+Смысл:
 
-```text
-workspace skeleton;
-architecture docs;
-legacy archive;
-devctl patch workflow;
-базовые newtype-id и error boundary.
-```
+- отказаться от продолжения старого `RDBMS-master` как кодовой базы;
+- сохранить его как legacy/reference;
+- зафиксировать архитектурный порядок;
+- создать workspace с crates и документацией.
 
 ## Stage 1 — page primitives
 
-Статус: выполнено.
+Статус: сделано.
 
-Цель: получить первый настоящий кирпич storage engine — slotted page.
+Результат:
 
-Сделано:
+- фиксированный `PAGE_SIZE`;
+- `PageId`, `SlotId`, `RowId`;
+- page header;
+- checksum;
+- slotted page;
+- insert/read/delete marker/compact;
+- tests для page invariants.
 
-```text
-фиксированный PAGE_SIZE = 4096;
-page header v1;
-page type;
-slot directory;
-insert/read/delete variable-size record;
-compact без смены live slot id;
-checksum validation;
-unit tests на основные инварианты.
-```
+Ограничения:
 
-Что это даёт:
-
-```text
-строка больше не является абстрактным Vec<Value>;
-появляется физический адрес row_id = (page_id, slot_id);
-можно строить heap table и индексы поверх стабильных slot id;
-можно проверять повреждение страницы до подключения WAL.
-```
+- нет long records;
+- нет overflow pages;
+- нет compression.
 
 ## Stage 2 — VFS/page store
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-StdVfs поверх std::fs;
-read_at/write_at/sync_data;
-page file abstraction;
-create/open database file;
-write_page/read_page;
-reopen test;
-corrupt page detection after reopen.
-```
+- `Vfs` и `VfsFile`;
+- `StdVfs`;
+- random-access `read_at/write_at`;
+- `sync_data`;
+- `PageFile`;
+- mapping `PageId -> offset`;
+- reopen tests.
 
-Запрещено на этом этапе:
+Ограничения:
 
-```text
-SQL;
-индексы;
-плагины;
-server mode.
-```
+- нет fault injection;
+- нет file locking;
+- нет async IO.
 
 ## Stage 3 — WAL skeleton
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-WAL record binary envelope v0;
-LSN allocator на byte offsets;
-WalWriter/WalReader поверх VfsFile;
-commit marker;
-truncated WAL detection;
-redo hook для committed page image.
-```
+- WAL record envelope;
+- LSN allocator;
+- append-only writer;
+- sequential reader;
+- checksum/length checks;
+- truncated suffix detection;
+- `PageImage` record.
 
 Ограничения:
 
-```text
-нет WAL file header;
-нет page_lsn update API;
-нет recovery при open database;
-нет checkpoint state;
-нет fault-injection VFS.
-```
+- нет WAL header;
+- нет checkpoint;
+- full-page images only.
 
 ## Stage 4 — recovery skeleton
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-rdbms_recovery crate;
-DatabasePaths;
-open_database через VFS;
-scan WAL при open;
-redo committed page images в PageFile;
-ignore uncommitted page images;
-idempotent recovery test;
-propagate WAL corruption during recovery.
-```
+- `rdbms_recovery`;
+- `open_database`;
+- WAL scan при open;
+- redo committed page images;
+- ignore uncommitted images;
+- idempotent recovery tests.
 
 Ограничения:
 
-```text
-нет undo;
-нет checkpoint state;
-нет page_lsn-based skip;
-нет commit protocol между WAL и data file;
-нет fault-injection VFS;
-нет catalog/bootstrap database header.
-```
+- redo-only;
+- нет undo;
+- нет checkpoint state;
+- нет pageLSN skip.
 
 ## Stage 5 — catalog and heap table v0
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-bootstrap catalog page 0;
-relation_id → heap storage object;
-internal create_table API;
-insert raw row bytes;
-full scan;
-reopen schema test;
-heap page extension when current pages are full.
-```
-
-Ограничения:
-
-```text
-нет SQL CREATE TABLE/INSERT/SELECT;
-нет record schema encoding;
-нет transactional catalog changes;
-нет WAL protocol for heap inserts;
-нет rollback;
-нет indexes.
-```
-
-## Stage 6 — transactions v0
-
-Статус: выполнено.
-
-Реализовано:
-
-```text
-rdbms_tx crate;
-TransactionalStore;
-begin/commit/rollback;
-autocommit helpers;
-single active writer на handle;
-transaction-local dirty page staging;
-WAL PageImage records before data file writes;
-rollback discards uncommitted create_table/insert_row;
-recovery test for committed catalog/heap pages from WAL.
-```
+- catalog page 0;
+- `RelationInfo`;
+- columns metadata;
+- heap storage object;
+- create table;
+- raw row insert;
+- full scan;
+- page allocation через catalog.
 
 Ограничения:
 
-```text
-нет MVCC;
-нет межпроцессного file lock;
-нет SQL BEGIN/COMMIT/ROLLBACK;
-нет transactional delete/update;
-нет persistent TxId allocator;
-нет checkpoint/WAL truncation;
-нет savepoints.
-```
+- нет SQL schema constraints;
+- нет namespaces;
+- нет catalog migrations.
+
+## Этап 6 — transactions v0
+
+Статус: сделано.
+
+Результат:
+
+- `TransactionalStore`;
+- `begin/commit/rollback`;
+- dirty-page staging;
+- WAL commit protocol;
+- autocommit helpers;
+- recovery committed catalog/heap rows.
+
+Ограничения:
+
+- один writer;
+- нет SQL-visible transactions;
+- нет MVCC;
+- rollback только отбрасывает staged pages.
 
 ## Stage 7 — SQL subset
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-rdbms_sql crate поверх TransactionalStore;
-lexer/parser для одного statement;
-Statement AST;
-CREATE TABLE;
-INSERT INTO ... VALUES ...;
-SELECT * и SELECT column list;
-simple WHERE column = literal;
-SQL row payload v0 в heap raw bytes;
-materialized ExecResult::Query;
-unit tests на parse/execute.
-```
+- parser маленького subset;
+- SQL row encoding;
+- `CREATE TABLE`;
+- `INSERT INTO ... VALUES ...`;
+- `SELECT *`;
+- `SELECT column list`;
+- `WHERE column = literal`;
+- direct executor поверх `TransactionalStore`.
 
 Ограничения:
 
-```text
-нет SQL BEGIN/COMMIT/ROLLBACK;
-нет INSERT column list;
-нет UPDATE/DELETE;
-нет JOIN/ORDER BY/GROUP BY;
-нет prepared statements/params;
-нет optimizer/logical plan tree;
-нет quoted identifiers;
-нет индексов.
-```
+- нет binder/optimizer;
+- нет prepared statements;
+- нет `UPDATE/DELETE/JOIN`.
 
-## Stage 8 — index v0
+## Этап 8 — index v0
 
-Статус: выполнено.
+Статус: сделано.
 
-Реализовано:
+Результат:
 
-```text
-rdbms_index crate;
-PageType::Index;
-B+Tree node format v0;
-leaf/internal nodes;
-leaf split/internal split/root split;
-equality lookup по INT/TEXT ключам;
-catalog metadata для index relation;
-CREATE INDEX name ON table(column);
-INSERT поддерживает обновление существующих indexes;
-SELECT ... WHERE indexed_column = literal использует index, если он есть.
-```
+- `rdbms_index`;
+- persistent B+Tree nodes в `PageType::Index`;
+- integer/text keys;
+- insert и equality lookup;
+- node split и root split;
+- catalog metadata для index relations;
+- SQL `CREATE INDEX`;
+- indexed lookup для `WHERE column = literal`.
 
 Ограничения:
 
-```text
-нет range scan;
-нет UNIQUE indexes;
-нет delete/update index maintenance;
-нет composite keys;
-нет DOUBLE indexes;
-нет planner cost model;
-нет MVCC visibility в index layer.
-```
+- нет delete;
+- нет unique/range/composite indexes;
+- нет MVCC visibility в index entries.
 
-## Future — planner and execution v0
+## Этап 9 — extension v0
 
-Статус: отложено после Stage 9 extension v0.
+Статус: сделано.
+
+Результат:
+
+- `rdbms_ext_abi` ABI sketch;
+- `rdbms_extension` static registry;
+- ABI version check;
+- built-in `stdlib`;
+- `upper(TEXT)` и `length(TEXT)`;
+- SQL `LOAD EXTENSION`;
+- catalog metadata для installed extensions;
+- scalar `SELECT function(literal, ...)`.
+
+Ограничения:
+
+- нет dynamic plugin loading;
+- нет WASM sandbox;
+- нет table/aggregate functions.
+
+## Этап 10 — platform ports
+
+Статус: сделано.
+
+Результат:
+
+- Windows path/sync smoke;
+- Android `rdbms_android` crate;
+- JNI-shaped smoke symbols;
+- Java wrapper `NativeSmoke`;
+- CI matrix для Linux/macOS/Windows;
+- Android aarch64 library build в CI.
+
+Ограничения:
+
+- нет Android app;
+- нет emulator/device tests;
+- нет SQL JNI API;
+- нет platform crash matrix.
+
+## Этап 11 — test hardening
+
+Статус: следующий разумный этап.
 
 Цель:
 
-```text
-отделить parser от binder/planner/executor;
-построить простое logical plan дерево;
-явно выбирать seq scan или index lookup;
-подготовить место для UPDATE/DELETE и range predicates.
-```
+- fault-injection VFS;
+- crash tests для WAL/recovery/tx/index;
+- property tests для page/index/catalog invariants;
+- differential tests для поддержанного SQL subset против SQLite там, где semantics совпадает;
+- больше reopen/recovery scenarios.
 
-```text
-B+Tree page format;
-insert/delete;
-equality scan;
-range scan;
-index verifier.
-```
-
-## Stage 9 — extension v0
-
-Статус: выполнено.
-
-Реализовано:
-
-```text
-rdbms_extension crate;
-static scalar function registry;
-built-in stdlib extension;
-ABI version check через rdbms_ext_abi;
-extension catalog metadata;
-LOAD EXTENSION stdlib;
-SELECT scalar_function(literal, ...) без FROM;
-WAL-backed install через rdbms_tx.
-```
-
-Ограничения:
-
-```text
-нет dynamic loading;
-нет Linux native plugin loader;
-нет WASM runtime;
-нет aggregate/table functions;
-нет function calls over table columns;
-нет extension unload/dependency tracking.
-```
-
-## Stage 10 — platform ports
-
-Статус: выполнено.
-
-Реализовано:
-
-```text
-Windows path/fsync smoke в rdbms_vfs;
-cross-platform path/sync smoke;
-rdbms_android crate;
-Android cdylib/rlib build target;
-JNI-shaped smoke symbols;
-Java NativeSmoke wrapper;
-CI matrix для Linux/Windows/macOS;
-Android aarch64 native library build job.
-```
-
-Ограничения:
-
-```text
-нет Android app;
-нет Gradle/instrumented tests;
-нет emulator/device execution;
-нет Windows installer;
-нет JNI SQL query API;
-нет platform-specific file lock.
-```
-
-## Future — database API v0
-
-Статус: следующий крупный слой после Stage 10.
+## Этап 12 — SQL DML expansion
 
 Цель:
 
-```text
-Database::open;
-Connection;
-public execute API;
-более чистая граница между SQL session и storage handles;
-подготовка к CLI shell и JNI query API.
-```
+- `DELETE`;
+- `UPDATE`;
+- basic `DROP TABLE`;
+- SQL-visible `BEGIN/COMMIT/ROLLBACK`;
+- prepared statements;
+- better type checking.
+
+Делать только после усиления тестов recovery.
+
+## Этап 13 — checkpoint and WAL policy
+
+Цель:
+
+- database/WAL headers;
+- checkpoint format;
+- pageLSN redo skip;
+- WAL truncation;
+- recovery start position;
+- sync policy documentation.
+
+## Этап 14 — concurrency and MVCC research
+
+Цель:
+
+- reader/writer policy;
+- snapshots;
+- visibility metadata;
+- lock/latch design;
+- deadlock story;
+- index visibility integration.
+
+## Этап 15 — real extension boundary
+
+Цель:
+
+- выбрать native ABI или WASM;
+- описать ownership/error/value ABI;
+- реализовать loader за feature flag;
+- добавить security policy;
+- добавить platform tests.
+
+## Что не делать раньше времени
+
+Не стоит раньше Этап 11–13 делать:
+
+- большой SQL parser;
+- network server;
+- ORM layer;
+- сложный optimizer;
+- dynamic plugins по умолчанию;
+- обещания file-format compatibility;
+- производительные benchmarks как главный критерий.

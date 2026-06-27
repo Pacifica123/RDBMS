@@ -1,61 +1,60 @@
-# Extension ABI
+# ABI расширений
 
-## 1. Зачем отдельный ABI
+## 1. Назначение
 
-Внутренние Rust trait удобны внутри workspace, но они не являются стабильным внешним контрактом для динамических расширений. Версии компилятора, layout, panic behavior и ownership делают такой контракт хрупким.
+`rdbms_ext_abi` фиксирует направление для будущих внешних расширений. Внешним plugin-ам нельзя отдавать Rust trait как стабильный контракт: Rust ABI и layout не являются подходящей долгосрочной границей.
 
-## 2. MVP-подход
+Поэтому внешняя граница должна быть C-compatible или изолированной, например через WASM.
 
-Первая версия расширений — проектный контракт, а не обязательная runtime-фича. Документ нужен сейчас, чтобы не замкнуть ядро на нестабильные внутренние типы.
+## 2. Текущий ABI sketch
 
-## 3. Native ABI sketch
-
-```rust
-#[repr(C)]
-pub struct RdbmsExtensionDescriptor {
-    pub abi_version: u32,
-    pub name_ptr: *const u8,
-    pub name_len: usize,
-    pub init: Option<extern "C" fn(*mut RdbmsHost) -> RdbmsStatus>,
-}
-```
-
-Во внешней ABI нет `String`, `Vec<T>`, `Box<dyn Trait>` и Rust panic через границу.
-
-## 4. Capabilities
-
-Расширение должно явно объявлять capabilities:
+Сейчас crate содержит:
 
 ```text
-scalar_function
-aggregate_function
-table_provider
-index_provider
-storage_adapter
-unsafe_native
+RDBMS_EXT_ABI_VERSION = 1
+abi_version_supported(version)
+RdbmsStatus
+RdbmsHost
+RdbmsExtensionDescriptor
 ```
 
-Чем ближе расширение к storage, тем строже требования.
+`RdbmsHost` — opaque handle. Extension не должна знать внутреннюю структуру host-а.
 
-## 5. Ownership
+`RdbmsExtensionDescriptor` содержит ABI version, имя extension и init callback.
 
-Правило по умолчанию: сторона, которая выделила память, её и освобождает. Для буферов нужна явная функция release.
+## 3. Что важно для ABI
 
-## 6. WASM-track
+Будущий ABI должен явно описывать:
 
-WASM может стать более безопасной альтернативой native plugins для части расширений. Но он не отменяет need в host API, versioning и capabilities.
+- кто владеет памятью;
+- как передаются строки;
+- как возвращаются ошибки;
+- как host вызывает functions;
+- как extension регистрирует SQL objects;
+- какие версии совместимы;
+- что происходит при unload;
+- какие функции доступны extension-у.
 
-## 7. Stage 9 runtime boundary
+Без этих правил native plugin loading лучше не включать.
 
-Stage 9 does not load native plugins. It adds a safe static registry in `rdbms_extension` and uses `rdbms_ext_abi::RDBMS_EXT_ABI_VERSION` only as a version check boundary.
+## 4. Почему static registry отдельно
 
-Runtime flow:
+`rdbms_extension` уже умеет static registry. Это рабочий runtime path для Этап 9.
 
-```text
-builtin descriptor
-  -> abi_version_supported(version)
-  -> ExtensionRegistry
-  -> scalar function call
-```
+`rdbms_ext_abi` — не runtime loader. Это контрактная заготовка для будущего этапа.
 
-The native `RdbmsExtensionDescriptor` remains a sketch for future plugin loading. No raw pointer from that descriptor is dereferenced in Stage 9.
+## 5. Ограничения
+
+Пока нет:
+
+- `dlopen`/`LoadLibrary`;
+- проверки подписи plugin-а;
+- sandbox;
+- отдельного process boundary;
+- стабильного value ABI;
+- callback API для storage/catalog;
+- документа compatibility promise.
+
+## 6. Следующий разумный шаг
+
+Сначала нужно сделать больше static extensions и стабилизировать SQL value boundary. Потом можно выбрать направление: native ABI или WASM. Для учебного проекта WASM может быть безопаснее, но native ABI полезен как инженерная практика.

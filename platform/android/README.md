@@ -1,14 +1,17 @@
-# Android smoke
+# Android-проверка
 
-Stage 10 does not add an Android application. It adds the smallest Android-facing
-library boundary:
+Этап 10 не добавляет Android-приложение. Он добавляет минимальную native-library boundary для Android.
+
+Файлы:
 
 ```text
-crates/rdbms_android -> cdylib/rlib
+crates/rdbms_android/
 platform/android/app/src/main/java/dev/rdbms/NativeSmoke.java
 ```
 
-The native library exports three JNI-shaped smoke functions:
+Rust crate собирается как `rlib` и `cdylib`. `cdylib` — форма, подходящая для JNI loading.
+
+Экспортированные JNI-shaped функции:
 
 ```text
 NativeSmoke.stage()      -> 10
@@ -16,9 +19,19 @@ NativeSmoke.abiVersion() -> 1
 NativeSmoke.add(20, 22)  -> 42
 ```
 
-The Rust side does not dereference JNI pointers. The functions only prove that a
-stable symbol name exists and that the crate can be built as an Android native
-library.
+Rust side не dereference-ит JNI pointers. Функции принимают raw pointers как opaque handles и только возвращают простые значения.
 
-CI builds the library for `aarch64-linux-android`. A real Android application,
-Gradle project, instrumented tests and device/emulator execution are later work.
+Что это проверяет:
+
+- native symbol names существуют;
+- crate можно собрать как Android native library;
+- Android crate линкуется с `rdbms_core` и `rdbms_sql`;
+- CI может собрать `aarch64-linux-android` target.
+
+Чего здесь нет:
+
+- Android app;
+- Gradle project;
+- emulator/device tests;
+- SQL execution через JNI;
+- mobile storage policy.

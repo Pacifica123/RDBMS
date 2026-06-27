@@ -1,208 +1,143 @@
 # Transactions v0
 
-## 1. Назначение
+## 1. Цель Этап 6
 
-Stage 6 добавляет первый transaction boundary поверх catalog/heap v0 и WAL v0.
-
-Это не MVCC и не полноценный SQL transaction manager. Цель ниже:
+Transactions v0 нужны, чтобы catalog/heap/index изменения проходили через один понятный commit protocol:
 
 ```text
-один writer на handle;
-begin / commit / rollback;
-autocommit helpers;
-commit пишет full-page images в WAL до data file;
-rollback отбрасывает staged catalog/heap pages;
-recovery может восстановить committed catalog/heap pages из WAL.
+изменить страницы в памяти → записать WAL → sync WAL → записать data file
 ```
 
-## 2. Граница слоя
+Это не полноценные SQL transactions и не MVCC. Это первый слой, который делает storage operations recoverable.
 
-Новый crate:
+## 2. Основные сущности
+
+`TransactionalStore` владеет:
+
+- `CatalogStore`;
+- `WalWriter`;
+- счётчиком `TxId`;
+- флагом active writer.
+
+`Transaction` содержит:
+
+- `tx_id`;
+- рабочую копию catalog;
+- dirty-page staging map;
+- состояние `Active/Committed/RolledBack`.
+
+## 3. Dirty-page staging
+
+Все изменённые страницы сначала лежат в памяти:
 
 ```text
-rdbms_tx
+PageId -> Page
 ```
 
-Основные типы:
+В эту map попадают:
+
+- catalog page;
+- heap pages;
+- index pages;
+- новые страницы, выделенные во время операции.
+
+Пока transaction не committed, data file не должен видеть эти pages.
+
+## 4. Commit
+
+Commit делает:
 
 ```text
-TransactionalStore<F: VfsFile>;
-Transaction<'a, F>;
-TransactionState;
-open_transactional_store(vfs, data_path, wal_path).
+1. для каждой dirty page записать WAL PageImage(tx_id, page);
+2. записать WAL CommitTx(tx_id);
+3. sync_data WAL;
+4. записать dirty pages в data file;
+5. sync_data data file;
+6. заменить committed catalog в памяти;
+7. освободить active writer.
 ```
 
-`TransactionalStore` владеет двумя файлами:
+Главная гарантия Этап 6:
 
 ```text
-CatalogStore<F>  -> database file;
-WalWriter<F>     -> WAL file.
+если data file получил страницу после commit, WAL уже содержит committed image этой страницы
 ```
 
-## 3. Модель writer-а
+## 5. Rollback
 
-Stage 6 принимает простое правило:
-
-```text
-на одном TransactionalStore может быть только одна активная write-транзакция.
-```
-
-Это enforced API-границей: `begin()` берёт `&mut self` и возвращает `Transaction`, который держит mutable borrow manager-а до `commit`, `rollback` или drop.
-
-Это ещё не межпроцессный lock и не глобальная блокировка файла. Несколько процессов, открывших один и тот же файл, Stage 6 не координирует.
-
-## 4. Staging
-
-Транзакция не пишет dirty pages в data file сразу.
-
-При `begin()` создаётся transaction-local копия catalog snapshot:
+Rollback делает:
 
 ```text
-working_catalog = committed catalog clone
-```
-
-При `create_table`:
-
-```text
-обновить working_catalog;
-создать staged heap page;
-создать staged catalog page.
-```
-
-При `insert_row`:
-
-```text
-читать heap page из dirty map или committed PageFile;
-вставить row bytes в in-memory page;
-положить page в dirty map;
-если места нет — выделить новую page id в working_catalog и обновить staged catalog page.
-```
-
-Dirty pages хранятся в памяти:
-
-```text
-BTreeMap<PageId, Page>
-```
-
-## 5. Commit protocol v0
-
-`commit()` делает:
-
-```text
-1. append PageImage(tx_id, page) для каждой dirty page;
-2. append CommitTx(tx_id);
-3. sync WAL file;
-4. write dirty pages в PageFile;
-5. sync data file;
-6. заменить committed in-memory catalog snapshot на working_catalog.
-```
-
-Ключевое свойство Stage 6: data pages не пишутся до durable commit marker в WAL.
-
-Если процесс падает после WAL sync, но до data write, Stage 4 recovery может восстановить committed full-page images из WAL.
-
-## 6. Rollback protocol v0
-
-`rollback()` делает:
-
-```text
-1. append AbortTx(tx_id);
-2. sync WAL file;
+1. записать AbortTx;
+2. sync_data WAL;
 3. очистить dirty pages;
-4. не менять committed catalog snapshot;
-5. не писать data file.
+4. освободить active writer.
 ```
 
-Так как Stage 6 использует no-steal staging, rollback не обязан делать physical undo в data file: uncommitted pages туда не попадали.
+Physical undo не нужен, потому что uncommitted dirty pages не писались в data file.
 
-Если `Transaction` был dropped без явного rollback, staged pages тоже не попадают в data file. Abort WAL marker при drop не записывается, потому что `Drop` не может вернуть `DbResult`.
+## 6. Autocommit helpers
 
-## 7. Autocommit
-
-Autocommit helpers — это thin wrappers:
+Для текущего SQL subset используются autocommit операции:
 
 ```text
-create_table_autocommit = begin + create_table + commit;
-insert_row_autocommit  = begin + insert_row + commit.
+create_table_autocommit
+insert_row_autocommit
+create_index_autocommit
+load_extension_autocommit
 ```
 
-Они нужны до появления SQL executor-а, чтобы higher layer мог выполнять одиночные операции без ручного управления transaction handle.
+Они открывают transaction, выполняют одно действие и commit-ят его.
 
-## 8. Связь с recovery
+SQL-команды `BEGIN`, `COMMIT`, `ROLLBACK` пока не поддержаны.
 
-Recovery не меняет свой формат. Оно уже умеет читать WAL v0 и применять committed `PageImage` records.
+## 7. Индексы в транзакциях
 
-Stage 6 проверяет сценарий:
+B+Tree index pages stage-ятся так же, как heap pages.
+
+При `CREATE INDEX`:
 
 ```text
-commit записал WAL;
-data file потерян/не содержит committed pages;
-open_database(vfs, paths) применяет WAL;
-CatalogStore::open видит committed catalog;
-full_scan возвращает committed row bytes.
+создаётся index relation;
+выделяется root page;
+строится пустой B+Tree root;
+существующие heap rows вставляются в index;
+root metadata сохраняется в catalog.
 ```
 
-## 9. Текущие ограничения
-
-Сейчас нет:
+При `INSERT`:
 
 ```text
-MVCC;
-read snapshots;
-межпроцессный file lock;
-несколько concurrent writers;
-SQL BEGIN/COMMIT/ROLLBACK;
-undo log;
-savepoints;
-deadlock detection;
-transactional delete/update;
-free-space reclamation on rollback;
-WAL truncation/checkpoint;
-stable TxId persisted across reopen.
+строка вставляется в heap;
+для подходящих indexes создаются index entries;
+изменённые index pages попадают в dirty-page map;
+commit пишет heap/catalog/index pages через WAL.
 ```
 
-`TxId` пока выдаётся с `1` при каждом open `TransactionalStore`. Это допустимо для skeleton-а, но должно быть заменено persistent allocator-ом до реальной эксплуатации.
+## 8. Ограничения
 
-## 10. Связь с SQL subset v0
+Пока нет:
 
-Stage 7 использует `TransactionalStore` как write boundary для SQL statements:
+- нескольких writer-ов;
+- SQL-visible transaction statements;
+- isolation levels;
+- MVCC;
+- locks/latches;
+- deadlock detection;
+- savepoints;
+- undo log;
+- group commit;
+- background checkpoint.
 
-```text
-CREATE TABLE -> create_table_autocommit;
-INSERT INTO ... VALUES -> insert_row_autocommit;
-SELECT -> committed full_scan.
-```
+Drop активной transaction освобождает writer flag, но не делает полноценный rollback protocol для частично выполненных операций. Поэтому публичный API должен явно завершать transaction.
 
-SQL-level `BEGIN`, `COMMIT` и `ROLLBACK` пока не реализованы. Поэтому каждое SQL write statement в Stage 7 является отдельной autocommit transaction.
+## 9. Что проверять дальше
 
-## Stage 8 — index pages in transactions
+Нужны тесты:
 
-B+Tree pages are staged exactly like heap and catalog pages.
-
-```text
-begin transaction
-  create/modify index pages in dirty page map
-  update catalog root page when root split happens
-commit
-  WAL PageImage records for dirty catalog/heap/index pages
-  CommitTx
-  WAL sync
-  data writes
-  data sync
-```
-
-Rollback discards staged index pages. There is still no MVCC, no delete maintenance and no index visibility map.
-
-## Stage 9 — extension metadata transactions
-
-Installing a static extension changes the catalog page, so it uses the same transaction machinery as table/index metadata:
-
-```text
-TransactionalStore::register_extension_autocommit
-  -> Transaction::register_extension
-  -> Catalog::register_extension_metadata
-  -> dirty catalog page
-  -> WAL PageImage + CommitTx
-```
-
-Rollback drops staged extension metadata the same way it drops staged table/index metadata.
+- rollback не меняет catalog/heap/index;
+- committed insert восстанавливается после reopen;
+- uncommitted WAL page images не применяются;
+- index split recoverable;
+- ошибка во время commit не оставляет store в ложном successful состоянии;
+- второй writer блокируется, пока первый active.

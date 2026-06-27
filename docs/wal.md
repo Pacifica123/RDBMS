@@ -1,152 +1,101 @@
-# WAL
+# WAL — журнал предзаписи
 
-## 1. Назначение
+## 1. Зачем нужен WAL
 
-WAL нужен не “для галочки”, а для восстановления после сбоя. Если страница могла быть частично записана или данные могли попасть на диск не в том порядке, recovery должен иметь достаточно информации для приведения базы к согласованному состоянию.
-
-## 2. Правило
+WAL нужен, чтобы база могла восстановить committed изменения после сбоя. Идея простая:
 
 ```text
-Write-Ahead Logging: log record должен быть durable раньше страницы данных, которую он описывает.
+сначала записать намерение/образ в журнал → надёжно сбросить журнал → потом писать data file
 ```
 
-## 3. Базовые понятия
+Если процесс упал между этими шагами, recovery читает WAL и доводит data file до committed состояния.
+
+## 2. Что реализовано сейчас
+
+`rdbms_wal` даёт WAL v0:
+
+- бинарный envelope записи;
+- `Lsn` как offset в WAL file;
+- append-only writer;
+- sequential reader;
+- checksum и проверку длины;
+- обнаружение truncated suffix;
+- записи `BeginTx`, `PageImage`, `CommitTx`, `AbortTx`, `Checkpoint`;
+- helper для redo committed page images.
+
+WAL v0 хранит full-page images. Это не самый эффективный формат, но он простой и хорошо подходит для раннего correctness-контурa.
+
+## 3. Типы записей
 
 ```text
-LSN      — позиция записи в WAL
-page_lsn — последний LSN, применённый к странице
-redo     — повторить изменение, если оно ещё не отражено на странице
-undo     — отменить изменение незавершённой транзакции; не MVP первой итерации
+BeginTx     начало транзакции
+PageImage   полный образ страницы, созданный транзакцией
+CommitTx    транзакция считается committed
+AbortTx     транзакция отменена
+Checkpoint  marker для будущего checkpoint protocol
 ```
 
-В WAL v0 `LSN` — это byte offset начала record header в WAL-файле. Первый record получает `Lsn(0)`, следующий record получает offset сразу после предыдущего encoded record.
+`PageImage` содержит `tx_id`, `page_id` и полный массив байт страницы.
 
-## 4. WAL file v0
+## 4. Commit protocol в Этап 6+
 
-WAL v0 — append-only поток независимых records. Общего file header пока нет. Reader сканирует файл с offset `0` до `file_len`. Если в конце файла остаётся неполный header или неполный payload, это `DbError::Corruption`, а не молчаливый EOF.
-
-Формат record header:
+Transactions v0 используют такой порядок:
 
 ```text
-offset  size  field
-0       4     magic = "RDBW"
-4       2     version = 1
-6       2     kind
-8       8     lsn
-16      8     tx_id, u64::MAX если не применяется
-24      8     page_id, u64::MAX если не применяется
-32      4     payload_len
-36      4     checksum
+1. собрать dirty pages в памяти;
+2. записать PageImage для каждой dirty page;
+3. записать CommitTx;
+4. вызвать sync_data для WAL;
+5. записать dirty pages в data file;
+6. вызвать sync_data для data file.
 ```
 
-Все числа пишутся little-endian. `WAL_HEADER_SIZE = 40`.
+До шага 4 data file не должен получать dirty pages этой транзакции.
 
-Checksum пока простой: сумма байтов с wraparound. Поле checksum при расчёте считается нулевым. Это слабый алгоритм, но он фиксирует саму границу проверки WAL corruption до выбора настоящего checksum.
+## 5. Что считает recovery
 
-## 5. Record kinds v0
+Recovery применяет только page images тех `tx_id`, для которых в WAL найден `CommitTx`.
 
-```text
-1 = BeginTx    { tx_id }
-2 = PageImage  { tx_id, page_id, payload = PAGE_SIZE bytes }
-3 = CommitTx   { tx_id }
-4 = AbortTx    { tx_id }
-5 = Checkpoint
-```
+Если есть `PageImage`, но нет `CommitTx`, этот image игнорируется.
 
-`PageImage` хранит полный serialized page image из `rdbms_page`. Payload должен иметь размер ровно `PAGE_SIZE`. Во время redo hook image дополнительно проходит `Page::from_bytes`, то есть проверяются page magic, версия, slot boundaries и page checksum.
+Это правило защищает от ситуации, когда незавершённая транзакция появилась в WAL, но не должна стать видимой после reopen.
 
-## 6. Writer/reader boundary
+## 6. Что проверяет reader
 
-`rdbms_wal` работает поверх `rdbms_vfs::VfsFile`:
+WAL reader проверяет:
 
-```text
-WalWriter<F: VfsFile>
-WalReader<F: VfsFile>
-LsnAllocator
-```
+- magic;
+- version;
+- длину payload;
+- checksum;
+- соответствие LSN текущему offset;
+- что запись не обрезана посередине.
 
-Для корректного сканирования WAL в `VfsFile` есть `len()`. Без длины файла нельзя отличить clean EOF на границе record от обрезанного suffix.
+Повреждённый WAL возвращает ошибку, а не молча пропускается.
 
-`WalWriter::append` назначает LSN, кодирует record, пишет bytes по offset `lsn.0`. `WalWriter::sync_data` даёт sync boundary. Stage 6 использует эту boundary в `rdbms_tx`: commit marker становится durable до записи dirty data pages.
+## 7. Ограничения текущего WAL
 
-## 7. Redo hook
+Пока нет:
 
-WAL предоставляет hook:
+- WAL file header;
+- checkpoint с позицией recovery;
+- truncation после checkpoint;
+- pageLSN redo skip;
+- logical records;
+- partial-page redo;
+- group commit;
+- segment rotation;
+- sync policy tuning.
 
-```text
-PageImageRedo::redo_page_image(lsn, tx_id, page_id, image)
-redo_committed_page_images(records, redo)
-```
+Также full-page images дорогие по размеру. Это допустимо для раннего этапа, но не для производительного storage engine.
 
-Hook replay-ит только page images транзакций, у которых есть `CommitTx` и нет `AbortTx`. Stage 4 использует этот hook в `rdbms_recovery`, чтобы применять committed full-page images к `PageFile` во время `open_database`. Checkpoint state и file bootstrap всё ещё не реализованы.
+## 8. Что должно появиться дальше
 
-## 8. Что не делаем сразу
+Ближайшие улучшения:
 
-Не начинаем с полного ARIES, nested top actions, сложного checkpointing и fine-grained undo. Сначала нужен воспроизводимый маленький recovery loop.
-
-Сейчас ещё нет:
-
-```text
-WAL file header;
-checkpoint state;
-page_lsn update API;
-fault-injection VFS;
-recovery checkpoint position.
-```
-
-## 9. Тесты
-
-Для Stage 3 зафиксированы unit tests:
-
-```text
-binary envelope round-trip;
-LSN allocator offset progression;
-writer append + reader scan commit marker;
-truncated WAL suffix detection;
-redo hook replays only committed page images.
-```
-
-Следующие recovery/transaction milestones должны добавить fault-injection crash tests:
-
-1. сбой до записи WAL;
-2. сбой после WAL до data page;
-3. сбой после частичной data page;
-4. сбой после commit;
-5. повторный recovery должен быть идемпотентным.
-
-## 10. Связь с transactions v0
-
-Stage 6 использует WAL v0 без изменения record format.
-
-Для committed transaction path `rdbms_tx` пишет:
-
-```text
-BeginTx(tx_id);
-PageImage(tx_id, dirty catalog/heap page);
-...
-CommitTx(tx_id);
-sync WAL;
-write dirty pages to data file;
-sync data file.
-```
-
-Для rollback path:
-
-```text
-BeginTx(tx_id);
-AbortTx(tx_id);
-sync WAL;
-drop staged dirty pages.
-```
-
-Uncommitted staged pages не попадают в data file. Поэтому Stage 6 не требует undo WAL records.
-
-## Stage 8 — index page images
-
-B+Tree pages are logged as normal `PageImage` records. The WAL layer does not inspect B+Tree node contents.
-
-```text
-WalRecordKind::PageImage { page_type = Index, page bytes = full 4096-byte image }
-```
-
-This keeps WAL v0 simple: recovery replays committed physical page images for catalog, heap and index pages alike.
+- database/WAL headers с version и compatibility policy;
+- checkpoint state;
+- использование `page_lsn`;
+- crash tests с fault-injection VFS;
+- более мелкие WAL records для heap/index операций;
+- понятная политика обрезки WAL.

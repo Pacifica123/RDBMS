@@ -1,129 +1,119 @@
-# Extension v0
+# Расширения
 
-## 1. Назначение
+## 1. Что есть сейчас
 
-Stage 9 добавляет первый безопасный путь расширений. Это не native plugin loader и не `.so`/`.dll` runtime. Текущий слой нужен, чтобы зафиксировать контракт:
+Этап 9 добавил безопасный static extension path.
+
+Это значит:
+
+- расширения не загружаются из `.so/.dll/.dylib`;
+- extension descriptor встроен в Rust binary;
+- registry проверяет ABI version;
+- scalar functions вызываются через обычные Rust function pointers;
+- metadata о загруженном extension сохраняется в catalog.
+
+Текущий встроенный extension:
 
 ```text
-extension descriptor
-  -> ABI version check
-  -> static registry
-  -> scalar functions
-  -> SQL LOAD EXTENSION
-  -> persisted catalog metadata
+stdlib
+  upper(TEXT)  -> TEXT
+  length(TEXT) -> INT
 ```
 
-## 2. Активные crates
+SQL пример:
+
+```sql
+LOAD EXTENSION stdlib;
+SELECT upper('ada');
+SELECT length('abc');
+```
+
+## 2. Почему сначала static path
+
+Dynamic native plugins — рискованная граница. Там появляются вопросы ABI, lifetime, ownership, unsafe, symbol loading, platform differences и security policy.
+
+Static path проще:
 
 ```text
-rdbms_ext_abi       C-compatible ABI sketch and ABI version constant
-rdbms_extension     safe static extension registry v0
-rdbms_catalog       persisted extension metadata in catalog page 0
-rdbms_tx            WAL-backed install of extension metadata
-rdbms_sql           LOAD EXTENSION and SELECT scalar_function(...)
+extension descriptor известен на compile time;
+функции вызываются безопасно;
+ABI version уже проверяется;
+SQL/catalog path можно отладить без dynamic loader.
 ```
 
-`rdbms_ext_abi` остаётся низкоуровневым контрактом для будущих native plugins. `rdbms_extension` — текущий рабочий слой для безопасных built-in extensions.
+Так проект получает расширяемость как архитектурный слой, но не тащит сразу весь риск native plugin loading.
 
-## 3. Static registry v0
+## 3. Как работает LOAD EXTENSION
 
-Расширение описывается descriptor-ом:
+Упрощённо:
+
+```text
+1. parser читает LOAD EXTENSION name;
+2. executor ищет built-in descriptor;
+3. registry проверяет abi_version;
+4. functions регистрируются по имени;
+5. catalog сохраняет extension metadata;
+6. commit делает изменение recoverable через WAL.
+```
+
+Повторная загрузка уже загруженного extension не должна создавать дубликаты функций.
+
+## 4. Вызов scalar function
+
+Для запроса:
+
+```sql
+SELECT upper('ada');
+```
+
+executor:
+
+```text
+1. разбирает function call без FROM;
+2. проверяет, что function есть в registry;
+3. проверяет arity;
+4. вызывает Rust function pointer;
+5. возвращает ExecResult с одной строкой и одной колонкой.
+```
+
+## 5. Catalog metadata
+
+Catalog хранит:
 
 ```text
 name
 abi_version
-kind = static
-scalar_functions[]
+kind
 ```
 
-Каждая scalar function описывается так:
+Сейчас `kind = static`.
+
+Это нужно, чтобы после reopen можно было восстановить runtime registry из metadata.
+
+## 6. Чего нет
+
+Пока нет:
+
+- dynamic loading native libraries;
+- plugin search path;
+- `CREATE EXTENSION` с файлами;
+- sandbox;
+- WASM extensions;
+- table functions;
+- aggregate functions;
+- extension-owned catalog objects;
+- unload/reload;
+- permission model.
+
+## 7. Куда развивать
+
+Безопасный порядок:
 
 ```text
-name
-arity
-return_type
-eval(args) -> Value
-```
-
-Сейчас поддержан только `ScalarArity::Exact(N)`. Функции принимают и возвращают `rdbms_core::Value`.
-
-## 4. Встроенное расширение stdlib
-
-Stage 9 добавляет built-in static extension:
-
-```text
-stdlib
-```
-
-Функции:
-
-```text
-length(TEXT) -> INT
-lower(TEXT) -> TEXT
-upper(TEXT) -> TEXT
-abs(INT|DOUBLE) -> INT|DOUBLE
-typeof(Value) -> TEXT
-rdbms_version() -> TEXT
-```
-
-`NULL` для `length/lower/upper/abs` возвращает `NULL`. Остальные ошибки считаются user error, а не corruption.
-
-## 5. SQL surface
-
-Установка расширения:
-
-```sql
-LOAD EXTENSION stdlib;
-```
-
-Вызов scalar function без `FROM`:
-
-```sql
-SELECT upper('ada');
-SELECT length('abc');
-SELECT rdbms_version();
-```
-
-В Stage 9 функции принимают только literal arguments. Вызовы вида `SELECT upper(name) FROM users` ещё не поддержаны. Это оставлено для planner/binder/expression этапа.
-
-## 6. Catalog metadata
-
-После `LOAD EXTENSION stdlib` catalog page хранит extension metadata:
-
-```text
-name = stdlib
-abi_version = 1
-kind = static
-```
-
-Metadata пишется через `rdbms_tx`, поэтому установка расширения получает тот же commit порядок, что catalog/heap/index pages:
-
-```text
-PageImage(catalog page)
-CommitTx
-WAL sync
-data page write
-data sync
-```
-
-При выполнении scalar function SQL executor строит runtime registry из extension metadata, сохранённой в catalog. Если extension не загружен, функция не находится.
-
-## 7. ABI version check
-
-`rdbms_ext_abi::RDBMS_EXT_ABI_VERSION` сейчас равен `1`. Registry отказывает descriptor-у, если его `abi_version` не поддерживается текущей сборкой.
-
-Stage 9 не разыменовывает raw pointers и не вызывает native entry point. `RdbmsExtensionDescriptor` остаётся sketch-ем внешней ABI, но runtime использует безопасный static path.
-
-## 8. Ограничения
-
-```text
-нет dynamic loading;
-нет Linux .so/.dll plugin loader;
-нет WASM runtime;
-нет aggregate functions;
-нет table-valued functions;
-нет functions over table columns;
-нет function volatility/security model;
-нет extension unload;
-нет dependency tracking between extensions.
+1. расширить static scalar functions;
+2. добавить тесты reopen/recovery для loaded extensions;
+3. описать ABI ownership rules;
+4. добавить platform-specific loader только за feature flag;
+5. рассмотреть WASM как более безопасную boundary;
+6. только потом делать native plugin API публичным.
 ```

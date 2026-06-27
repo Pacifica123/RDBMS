@@ -1,181 +1,173 @@
-# Architecture
+# Архитектура RDBMS
 
-## 1. Назначение
+## 1. Назначение проекта
 
-RDBMS — учебно-инженерный проект собственной СУБД на Rust. Главная цель — не нарисовать SQL shell, а построить ядро с понятными гарантиями хранения, восстановления, каталога, транзакций и расширяемости.
+RDBMS — учебно-инженерная СУБД на Rust. Проект нужен не для того, чтобы быстро показать SQL-консоль, а для того, чтобы собрать ядро с понятными границами: хранение, WAL, восстановление, каталог, транзакции, SQL layer, индексы, расширения и переносимость.
 
 Рабочая формула:
 
 ```text
-ядро СУБД = storage + WAL + recovery + catalog + transaction boundary + executor API + extension boundary + platform boundary + diagnostics
+ядро СУБД = страницы + VFS + WAL + recovery + catalog + transactions + SQL executor + indexes + extensions + platform boundary
 ```
 
-## 2. Почему проект перезапущен
+Каждый слой должен иметь маленький публичный контракт и тесты. Если слой нельзя проверить отдельно, значит его граница выбрана плохо.
 
-Ранний черновик был построен вокруг `sql_execute(&mut self, query: &str)` и строкового диспетчера. Это давало быстрый видимый прогресс, но скрывало отсутствие физического формата, WAL, recovery, каталога, транзакций и переносимого IO-слоя.
+## 2. Почему проект начат заново
 
-Новая архитектура строится снизу вверх:
+Ранний прототип `RDBMS-master` начинался со строкового SQL-диспетчера и `Vec<Table>` в памяти. Такой подход быстро даёт видимый результат, но не отвечает на главные вопросы СУБД:
+
+- где физически лежит строка;
+- как найти страницу после reopen;
+- как понять, что страница повреждена;
+- как восстановить committed данные после сбоя;
+- где хранится catalog;
+- как отличить committed и uncommitted изменения;
+- как перенести IO на Windows/Android без переписывания ядра.
+
+Поэтому новый проект идёт снизу вверх:
 
 ```text
-байты → страницы → VFS/page store → WAL → recovery → каталог → таблицы → транзакции → SQL subset → индексы → расширения → platform ports
+байты → страницы → VFS/page store → WAL → recovery → catalog → heap table → transactions → SQL subset → B+Tree index → extensions → platform ports
 ```
 
-SQL остаётся пользовательским интерфейсом, но не является фундаментом ядра.
+SQL остаётся пользовательским интерфейсом, но не является фундаментом.
 
-## 3. Подсистемы
+## 3. Слои проекта
 
-### rdbms_core
+### `rdbms_core`
 
-Общие типы, ошибки, идентификаторы и публичные контракты. Здесь живут `PageId`, `RelationId`, `TxId`, `Lsn`, `DbError`, `DbResult`, `Value`, `ColumnInfo` и `ExecResult`.
+Общие типы и ошибки. Здесь находятся `PageId`, `RelationId`, `TxId`, `Lsn`, `RowId`, `DbError`, `DbResult`, `Value`, `ColumnInfo`, `ExecResult`.
 
-### rdbms_vfs
+Этот crate не должен знать о файлах, WAL, страницах или SQL parser-е.
 
-Абстракция файловой системы, синхронизации данных и первого page store. Нужна для Linux, Windows, Android, тестов отказов и будущей fault injection. Ядро не должно напрямую зависеть от произвольных вызовов `std::fs` в бизнес-логике. Текущий слой реализует `StdVfs`, random-access `read_at/write_at`, `len`, `sync_data` и `PageFile`, где `PageId` отображается в `page_id * PAGE_SIZE`.
+### `rdbms_vfs`
 
-### rdbms_page
+Слой файловой системы. Он прячет `std::fs` за простым контрактом: открыть файл, читать/писать по offset, узнать длину, вызвать `sync_data`.
 
-Физическая страница: размер, заголовок, checksum, layout, границы slotted page. Это первая настоящая единица storage-мышления.
+Поверх него построен `PageFile`: `PageId(7)` читается и пишется по offset `7 * PAGE_SIZE`.
 
-### rdbms_wal
+Этот слой нужен для переносимости и будущих fault-injection tests.
 
-Журнал предзаписи. Текущий слой реализует WAL record binary envelope v0, LSN allocator, append-only writer, sequential reader, commit marker, truncated suffix detection и page-image redo hook. WAL не открывает базу сам и не пишет страницы данных напрямую.
+### `rdbms_page`
 
-### rdbms_recovery
+Физическая страница фиксированного размера. Страница содержит заголовок, тип страницы, checksum, LSN, slot directory и payload-зону.
 
-Минимальный recovery loop. Слой открывает data file и WAL file через VFS, сканирует WAL, применяет только committed full-page images к `PageFile`, игнорирует uncommitted page images и возвращает recovered page-file handle. На текущем этапе это redo-only skeleton без undo и checkpoint state; commit ordering для catalog/heap операций живёт выше, в `rdbms_tx`.
+Сейчас это базовый slotted-page layout: записи можно вставлять, читать по `SlotId`, помечать удалёнными и compact-ить без изменения живых `SlotId`.
 
-### rdbms_catalog
+### `rdbms_wal`
 
-Persistent catalog и heap table v0. Текущий слой резервирует page 0 под catalog record, хранит `RelationId -> StorageObject::Heap { pages }`, умеет bootstrap catalog, internal `create_table`, raw `insert_row` и `full_scan`. Для Stage 6 каталог также отдаёт transaction-staging helpers: построить catalog page image, выделить page id и обновить heap storage metadata без немедленной записи в data file.
+Журнал предзаписи. WAL v0 хранит бинарные записи с magic/version/checksum/LSN и типом записи.
 
-### rdbms_tx
+Текущие типы записей: `BeginTx`, `PageImage`, `CommitTx`, `AbortTx`, `Checkpoint`.
 
-Transactions v0. Слой владеет `CatalogStore` и `WalWriter`, даёт `begin/commit/rollback`, autocommit helpers и один active writer на handle. Dirty catalog/heap pages сначала живут в memory staging map. Commit пишет `PageImage` records в WAL, затем `CommitTx`, затем sync WAL, и только после этого пишет dirty pages в data file. Rollback отбрасывает staged pages без physical undo.
+WAL не открывает базу сам и не пишет data file напрямую. Он только даёт устойчивый append-only журнал, который потом читает recovery.
 
-### rdbms_sql
+### `rdbms_recovery`
 
-SQL subset v0. Слой содержит маленький lexer/parser, `Statement` AST, SQL row encoding v0 и прямой executor поверх `rdbms_tx::TransactionalStore`. Сейчас поддержаны `CREATE TABLE`, `INSERT INTO ... VALUES ...`, `CREATE INDEX`, `LOAD EXTENSION`, scalar `SELECT function(literal, ...)`, `SELECT *`, `SELECT column list` и `WHERE column = literal`. Binder, optimizer, prepared statements и полноценный operator tree ещё не реализованы.
+Минимальное восстановление. Оно открывает data file и WAL file через VFS, читает WAL с offset 0 и применяет только committed full-page images.
 
-### rdbms_ext_abi
+Это redo-only схема. `UNDO`, checkpoint state, pageLSN-skip и логическая перестройка индексов пока не реализованы.
 
-Стабильная внешняя граница расширений. Наружу нельзя отдавать сырой Rust trait как долгоживущий plugin contract. Для native plugins нужна C-compatible ABI или другой стабильный слой, например WASM.
+### `rdbms_catalog`
 
-### rdbms_extension
+Persistent catalog и heap table v0. Catalog хранится в page 0 как один encoded record. Он знает relation id, имя relation, kind, columns, heap pages, index root page и установленные static extensions.
 
-Static extension registry v0. Текущий слой регистрирует built-in extension descriptors, проверяет ABI version и вызывает scalar functions через безопасные Rust function pointers. Dynamic native plugins пока не загружаются.
+Catalog умеет bootstrap, создать таблицу, создать index relation, выделить page id, вставить raw row bytes в heap и просканировать heap.
 
+### `rdbms_tx`
 
-### rdbms_android
+Transactions v0. Слой держит `CatalogStore` и `WalWriter`, даёт `begin`, `commit`, `rollback` и autocommit helpers.
 
-Android native-library smoke crate. Stage 10 builds it as `rlib` and `cdylib`, exports JNI-shaped smoke symbols and links it against the SQL/core stack. It is not an Android app and it does not expose a full SQL JNI API yet.
+Правило commit:
 
-### rdbms_cli
+```text
+staged dirty pages → WAL PageImage records → WAL CommitTx → sync WAL → write data pages → sync data file
+```
 
-Тонкая оболочка. CLI не владеет архитектурой, а только вызывает публичный API.
+Rollback просто выбрасывает staged pages и пишет `AbortTx`. Physical undo пока нет.
 
-## 4. Инварианты уровня ядра
+### `rdbms_sql`
 
-1. Страница либо проходит проверку формата и checksum, либо считается повреждённой.
-2. WAL record имеет LSN и достаточную информацию для recovery-сценария своего milestone.
-3. Commit не считается durable, пока нужные данные не прошли через требуемую sync-границу.
-4. Catalog changes восстанавливаются тем же механизмом, что и пользовательские данные.
+Маленький SQL subset поверх `TransactionalStore`.
+
+Поддержано:
+
+```text
+CREATE TABLE name (column TYPE, ...)
+INSERT INTO name VALUES (literal, ...)
+CREATE INDEX name ON table(column)
+LOAD EXTENSION stdlib
+SELECT function(literal, ...)
+SELECT * FROM name [WHERE column = literal]
+SELECT column, ... FROM name [WHERE column = literal]
+```
+
+Нет binder-а, optimizer-а, prepared statements, SQL transactions, `JOIN`, `UPDATE`, `DELETE` и полноценного operator tree.
+
+### `rdbms_index`
+
+B+Tree index v0. Индекс хранится в обычных `PageType::Index` страницах. Сейчас он поддерживает вставку `(key, RowId)`, split страниц и equality lookup по `INT` и `TEXT` ключам.
+
+Удаления, уникальность, range scan, NULL entries и MVCC visibility ещё не реализованы.
+
+### `rdbms_ext_abi`
+
+Набросок C-compatible ABI для будущих native extensions. Это не runtime loader, а стабильная внешняя форма, которую можно развивать без выдачи Rust trait-ов наружу.
+
+### `rdbms_extension`
+
+Static extension registry v0. Сейчас расширения встроены в бинарь и загружаются по имени. Встроенное расширение `stdlib` даёт scalar functions `upper(TEXT)` и `length(TEXT)`.
+
+Dynamic native plugin loading пока отсутствует.
+
+### `rdbms_android`
+
+Android native-library smoke crate. Он собирается как `rlib` и `cdylib`, экспортирует JNI-shaped функции `stage`, `abiVersion`, `add` и линкуется с SQL/core stack.
+
+Это не Android-приложение и не SQL JNI API.
+
+### `rdbms_cli`
+
+Пока это тонкая CLI-заглушка. Настоящий shell не является ближайшим архитектурным приоритетом.
+
+## 4. Главные инварианты
+
+1. Страница не считается валидной без проверки header/checksum.
+2. `SlotId` живой записи не должен меняться после compact.
+3. WAL record имеет LSN и проверяемый binary envelope.
+4. Recovery применяет только committed page images.
 5. Transaction v0 не пишет dirty pages в data file до durable WAL commit marker.
-6. SQL-ошибка не должна превращаться в corruption или internal invariant violation.
-7. Расширение не может нарушить память ядра через нестабильный Rust ABI.
-8. Android/Linux/Windows различия изолируются за VFS и feature-флагами.
+6. SQL error должен оставаться пользовательской ошибкой, а не превращаться в corruption.
+7. Index page проходит через тот же staging/WAL путь, что catalog и heap page.
+8. Платформенные различия изолируются за VFS и узкими FFI-boundary crate-ами.
 
-## 5. Public API sketch
+## 5. Минимальный публичный API
+
+Текущий пользовательский путь выглядит так:
 
 ```rust
-pub struct Database;
-pub struct Connection;
-pub struct Transaction;
+let vfs = StdVfs;
+let paths = DatabasePaths::new("data.dbonrs", "data.wal");
+let page_file = open_database(&vfs, paths)?;
+let mut store = TransactionalStore::new(page_file, wal_file)?;
 
-impl Database {
-    pub fn open(path: impl AsRef<std::path::Path>, options: DbOptions) -> DbResult<Self>;
-    pub fn open_in_memory(options: DbOptions) -> DbResult<Self>;
-    pub fn connect(&self) -> DbResult<Connection>;
-}
-
-impl Connection {
-    pub fn execute(&mut self, sql: &str, params: &[Value]) -> DbResult<ExecResult>;
-    pub fn transaction(&mut self) -> DbResult<Transaction>;
-}
+rdbms_sql::execute(&mut store, "CREATE TABLE users (id INT, name TEXT)", &[])?;
+rdbms_sql::execute(&mut store, "INSERT INTO users VALUES (1, 'Ada')", &[])?;
+let result = rdbms_sql::execute(&mut store, "SELECT name FROM users WHERE id = 1", &[])?;
 ```
 
-Публичный API не раскрывает page/index internals.
+API пока не обещает стабильности для внешних пользователей. Он нужен для закрепления архитектурных слоёв.
 
-## 6. Минимальная конкурентная модель
+## 6. Конкурентность
 
-MVP: many readers + single writer. Это ограничение принимается явно, чтобы не смешивать первую версию storage/recovery с полноценным MVCC и конкурентными writer-ами.
+Текущая модель: many readers + single writer как будущая цель, но Этап 6 фактически даёт один active writer на handle. Это сделано специально, чтобы не смешивать первый storage/recovery stack с полноценным MVCC.
 
 ## 7. Граница с legacy
 
-Старый код сохранён только как исторический материал. Он не импортируется, не компилируется и не является upstream-модулем новой архитектуры.
+`docs/legacy/RDBMS-master` сохранён как исторический материал. Код оттуда не продолжается. Полезны только термины и ранняя предметная модель: database, table, column, row, value.
 
-## Stage 8 — index layer
+## 8. Что считать текущей архитектурной вершиной
 
-Stage 8 inserts `rdbms_index` between SQL execution and physical pages.
+После Этап 10 верхний слой — маленький SQL subset с persistent heap tables, equality indexes, static extensions и платформенные smoke-проверки. Ниже есть WAL-backed transactions.
 
-```text
-rdbms_sql
-  |
-  +-- sequential heap scan through rdbms_tx
-  |
-  +-- equality lookup through rdbms_index when an index exists
-
-rdbms_tx
-  |
-  +-- stages catalog pages
-  +-- stages heap pages
-  +-- stages index pages
-```
-
-The index layer does not own files and does not bypass transactions. It receives a small page-store interface from `rdbms_tx`, so index changes participate in the same dirty-page staging and WAL full-page-image commit protocol as catalog and heap changes.
-
-## Stage 9 — extension v0
-
-Stage 9 inserts a safe static extension path above SQL and catalog metadata.
-
-```text
-rdbms_sql
-  |
-  +-- LOAD EXTENSION stdlib
-  +-- SELECT scalar_function(literal, ...)
-
-rdbms_extension
-  |
-  +-- static registry
-  +-- ABI version check through rdbms_ext_abi
-
-rdbms_catalog
-  |
-  +-- persisted extension metadata in catalog page 0
-```
-
-Native plugins are still not loaded at runtime. The project now has an ABI descriptor sketch plus a safe built-in registry path. This keeps extension behavior testable without crossing unsafe FFI boundaries.
-
-
-## Stage 10 — platform ports
-
-Stage 10 adds portability smoke coverage around the current stack.
-
-```text
-rdbms_vfs
-  |
-  +-- cross-platform path/sync smoke
-  +-- Windows-only path/fsync smoke in CI
-
-rdbms_android
-  |
-  +-- cdylib/rlib
-  +-- JNI-shaped smoke symbols
-  +-- host JNI smoke tests
-
-.github/workflows/ci.yml
-  |
-  +-- Linux/Windows/macOS Rust matrix
-  +-- Android aarch64 native library build
-```
-
-The platform layer does not change page, WAL, recovery, catalog, transaction, SQL, index or extension formats. Platform-specific behavior should remain behind narrow boundaries such as `rdbms_vfs` or `rdbms_android`.
+Следующий крупный шаг — сделать SQL и storage менее демонстрационными: добавить более сильные транзакционные гарантии, расширить DML, улучшить recovery и начать нормальные crash/differential/property tests.

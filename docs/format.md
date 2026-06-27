@@ -1,338 +1,247 @@
-# FORMAT — физический формат RDBMS
+# Физические форматы RDBMS
 
-## Статус
+Этот документ описывает текущие форматы, которые уже есть в коде. Форматы пока версии `v0/v1` и не обещают долгосрочную совместимость. Их задача — зафиксировать, какие байты пишет проект сейчас.
 
-Документ описывает текущий экспериментальный формат страницы, database file v0 и WAL record v0. Это не обещание вечной совместимости. До полноценного recovery формат можно менять, но каждое изменение должно быть явно отражено здесь и в тестах соответствующего crate.
+## 1. Общие правила
 
-## Базовая единица хранения
-
-Минимальная единица физического хранения — страница фиксированного размера.
+Формат строится вокруг страниц фиксированного размера:
 
 ```text
-PAGE_SIZE = 4096 bytes
-byte order = little-endian
-page_id = u64
-lsn = u64
-slot_id = u16
+PageId -> offset = PageId * PAGE_SIZE
 ```
 
-Сейчас реализованы in-memory page buffer в crate `rdbms_page`, первый disk-backed слой в crate `rdbms_vfs`, WAL record stream v0 в crate `rdbms_wal`, первый redo-only recovery loop в crate `rdbms_recovery`, persistent catalog page v0 и heap table v0 в crate `rdbms_catalog`, transaction commit ordering v0 в crate `rdbms_tx`, SQL row payload v0 в crate `rdbms_sql`. VFS/page store записывает и читает страницы через random-access файл.
+Все долгоживущие данные должны проходить через проверяемый бинарный формат. JSON не используется как формат базы данных.
 
-## Layout страницы v1
+Главные единицы:
+
+- data file — набор страниц;
+- page — физическая единица чтения/записи;
+- WAL file — append-only журнал;
+- catalog page — page 0;
+- heap page — страницы таблиц;
+- index page — страницы B+Tree;
+- SQL row — encoded record внутри heap page.
+
+## 2. Page v1
+
+Страница — это массив байт фиксированного размера `PAGE_SIZE`. В начале лежит header, дальше свободное место, slot directory и записи.
+
+Смысл header:
 
 ```text
-[page header][slot directory → ... free space ... ← record bytes]
+magic/version      защита от чужого формата
+page_id            физический номер страницы
+page_type          catalog / heap / index / free
+page_lsn           будущая связь с WAL redo
+slot_count         число slot-ов
+free_start         начало свободной области
+free_end           конец свободной области
+checksum           проверка повреждения страницы
 ```
 
-Header занимает 34 байта:
+Сейчас checksum нужен, чтобы ошибка чтения не превращалась в молчаливую порчу данных.
+
+## 3. Slotted page
+
+Slotted page хранит записи так:
 
 ```text
-offset  size  field
-0       4     magic = "RDBP"
-4       2     version = 1
-6       2     page_type
-8       8     page_id
-16      8     page_lsn
-24      2     free_start
-26      2     free_end
-28      2     slot_count
-30      4     checksum
+[page header][record payload grows →][free space][← slot directory]
 ```
 
-`free_start` всегда равен `HEADER_SIZE + slot_count * SLOT_SIZE`. Это упрощает первый вариант: каталог слотов растёт только вправо, а payload-зона растёт слева от конца страницы.
+Slot хранит offset и length записи. Пользователь записи видит не offset, а `SlotId`.
 
-## Slot directory
-
-Один slot занимает 6 байт:
+Инвариант:
 
 ```text
-offset  size  field
-0       2     record_offset
-2       2     record_len
-4       2     flags
+живой SlotId не меняется после compact()
 ```
 
-Флаги:
+Это важно для `RowId { page_id, slot_id }`: индекс хранит именно такой физический адрес строки.
+
+Удаление в текущем page layer только помечает slot как свободный. Полноценный SQL `DELETE` ещё не реализован.
+
+## 4. WAL record v0
+
+WAL — append-only файл. Каждая запись имеет envelope:
 
 ```text
-0 = unused
-1 = live
-2 = dead
+magic
+version
+kind
+lsn
+tx_id
+page_id или absent marker
+payload_len
+checksum
+payload
 ```
 
-`row_id = (page_id, slot_id)` остаётся стабильным для живой записи даже после `compact()`: payload может быть переложен внутри страницы, но номер слота не меняется.
-
-## Операции страницы
-
-Реализовано:
+Текущие kind:
 
 ```text
-Page::new(page_id, page_type)
-Page::from_bytes(bytes)
-Page::insert_record(bytes) -> SlotId
-Page::read_record(slot_id) -> Option<&[u8]>
-Page::delete_record(slot_id) -> bool
-Page::compact()
-Page::validate()
+BeginTx
+PageImage
+CommitTx
+AbortTx
+Checkpoint
 ```
 
-`delete_record` не стирает payload немедленно. Он помечает slot как dead. `compact()` перепаковывает только живые записи и освобождает дырки.
+`PageImage` хранит полный образ страницы. Это просто и дорого по месту, но хорошо подходит для раннего recovery: не нужно восстанавливать отдельные логические операции.
 
-## Checksum
+## 5. LSN
 
-Checksum пока простой: сумма байтов с wraparound. Поле checksum при расчёте считается нулевым.
+В WAL v0 `Lsn` — это byte offset начала record header в WAL file.
 
-Это слабый алгоритм. Его назначение сейчас — зафиксировать саму границу проверки повреждений. Перед реальным recovery нужно заменить алгоритм на более сильный и явно описать совместимость формата.
-
-
-## Database file v0
-
-Первый файл базы — это простой массив страниц фиксированного размера. Страница с `page_id = N` хранится по смещению:
+Это простое правило даёт проверку:
 
 ```text
-offset = N * PAGE_SIZE
+record.lsn должен совпадать с offset, по которому reader нашёл запись
 ```
 
-На этом этапе ещё нет allocator, free-space map и file header bootstrap. `PageType::FileHeader` уже зарезервирован в формате страницы, но `rdbms_vfs` пока не создаёт специальную header page автоматически. Page 0 теперь зарезервирована слоем `rdbms_catalog` под catalog page v0.
+Если LSN не совпадает, WAL считается повреждённым.
 
-`PageFile::write_page` перед записью проверяет checksum и совпадение `PageId` в заголовке. `PageFile::read_page` читает ровно `PAGE_SIZE` байт, строит `Page::from_bytes`, проверяет checksum и отдельно проверяет, что запрошенный `PageId` совпал с `page_id` в заголовке. Повреждённая страница после reopen должна возвращать `DbError::Corruption`.
+## 6. Catalog page
 
-## WAL record v0
+Catalog хранится в page 0 как один record с magic `RDBC` и version `1`.
 
-WAL v0 — append-only поток records без общего file header. Один record состоит из fixed header и payload:
+Catalog содержит:
 
 ```text
-offset  size  field
-0       4     magic = "RDBW"
-4       2     version = 1
-6       2     kind
-8       8     lsn
-16      8     tx_id, u64::MAX если не применяется
-24      8     page_id, u64::MAX если не применяется
-32      4     payload_len
-36      4     checksum
+next_relation_id
+next_page_id
+relations[]
+extensions[]
 ```
 
-`WAL_HEADER_SIZE = 40`. Все числа little-endian. В WAL v0 `LSN` равен byte offset начала record header.
-
-Record kinds:
+Relation metadata содержит:
 
 ```text
-1 = BeginTx
-2 = PageImage, payload = PAGE_SIZE bytes
-3 = CommitTx
-4 = AbortTx
-5 = Checkpoint
+relation_id
+name
+kind: table / index / system
+columns[]
+storage object
 ```
 
-Reader обязан обнаруживать обрезанный suffix: неполный header или payload в конце WAL возвращает `DbError::Corruption`.
-
-## Recovery behavior v0
-
-Stage 4 не добавляет новый on-disk layout. Recovery v0 использует существующий database file v0 и WAL record v0:
+Storage object сейчас бывает двух видов:
 
 ```text
-open data file через VFS;
-open WAL file через VFS;
-scan WAL с offset 0;
-validate WAL records;
-redo только PageImage records транзакций с CommitTx и без AbortTx;
-write full page image в PageFile по page_id;
-sync data file после recovery pass.
+Heap { pages[] }
+BPlusTree { table_id, column_name, root_page_id }
 ```
 
-Uncommitted page images не применяются. Повторный запуск recovery допустим: committed full-page image может быть записан повторно и должен оставить тот же page state.
-
-## Catalog page v0
-
-Stage 5 резервирует page 0 под persistent catalog:
+Catalog также хранит установленные static extensions:
 
 ```text
-page_id = 0
-page_type = Catalog
-slot 0 = catalog record v0
+name
+abi_version
+kind
 ```
 
-Catalog record v0:
+## 7. Heap table
+
+Heap table — это relation kind `Table` со storage object `Heap`.
+
+Catalog хранит список page id, которые принадлежат таблице. Каждая heap page — обычная slotted page с `PageType::Heap`.
+
+Строка в heap page хранится как opaque bytes. SQL layer сам кодирует и декодирует значения.
+
+## 8. SQL row v0
+
+SQL row encoding используется `rdbms_sql` для записи значений в heap table.
+
+Форма:
 
 ```text
-offset  size      field
-0       4         magic = "RDBC"
-4       2         version = 1
-6       8         next_relation_id
-14      8         next_page_id
-22      4         relation_count
-26      variable  relation entries
+magic = RDBR
+version = 1
+value_count
+values[]
 ```
 
-Relation entry v0:
+Каждое значение имеет tag:
 
 ```text
-relation_id: u64
-relation_kind: u8, 1 = Table, 2 = Index, 3 = System
-storage_object
-name: string16
-column_count: u16
-columns: repeated { name: string16, type_name: string16 }
+NULL
+INTEGER(i64)
+TEXT(utf8 bytes)
+DOUBLE(f64)
 ```
 
-Storage object v0:
+Типы в `CREATE TABLE` сейчас проверяются на уровне SQL subset. Нет полноценной системы типов, constraints, default values и NULL policy.
+
+## 9. Index page / B+Tree node v0
+
+Index page — это `PageType::Index`. Внутри страницы сейчас лежит один encoded node record в slot 0.
+
+Node имеет magic `RDBI`, version `1` и kind:
 
 ```text
-kind: u8, 1 = Heap
-page_count: u32
-pages: repeated PageId/u64
+Leaf
+Internal
 ```
 
-`string16 = u16 byte_len + UTF-8 bytes`.
-
-## Heap table v0
-
-Heap table v0 хранит raw row bytes в обычных slotted pages с `PageType::Heap`. Каталог связывает relation id с набором heap page ids:
+Leaf хранит:
 
 ```text
-RelationId -> StorageObject::Heap { pages: Vec<PageId> }
+next_leaf
+entries: (key, RowId)[]
 ```
 
-Heap pages не обязаны быть непрерывными. При нехватке места `CatalogStore::insert_row` добавляет новую страницу через catalog `next_page_id` и обновляет storage object.
-
-`RowId = (PageId, SlotId)`.
-
-
-## SQL row payload v0
-
-Stage 7 не меняет heap page layout. Он определяет SQL-facing payload, который кладётся внутрь raw heap record bytes для таблиц, созданных через SQL API.
+Internal node хранит:
 
 ```text
-offset  size      field
-0       4         magic = "RDBR"
-4       2         version = 1
-6       2         value_count
-8       variable  value entries
+separator keys[]
+children page ids[]
 ```
 
-Value entry:
+Поддержанные key types:
 
 ```text
-0 = NULL, no payload
-1 = INTEGER, i64 little-endian
-2 = TEXT, u32 byte_len + UTF-8 bytes
-3 = DOUBLE, f64 little-endian
+INTEGER
+TEXT
 ```
 
-SQL executor проверяет, что `value_count` совпадает с количеством колонок relation metadata.
+`MAX_KEYS` намеренно маленький, чтобы unit tests быстро заставляли дерево split-иться. Это тестовый параметр, не performance target.
 
-## Что ещё не является форматом БД
+## 10. Extension ABI sketch
 
-Сейчас нет:
+`rdbms_ext_abi` описывает C-compatible структуры для будущих native extensions:
 
 ```text
-file header bootstrap;
-segment layout;
-free-space map;
-general record schema layout beyond SQL row v0;
-full SQL-visible table schema semantics;
-WAL file header;
-page_lsn update API;
-checkpoint state;
-recovery checkpoint position;
-general typed record encoding beyond SQL row v0.
+RDBMS_EXT_ABI_VERSION = 1
+RdbmsStatus
+RdbmsHost opaque handle
+RdbmsExtensionDescriptor
 ```
 
-Следующий практический слой — index v0 или более полный SQL binder/planner поверх уже существующего SQL subset.
+Сейчас runtime не загружает native libraries. Рабочий механизм расширений — static registry в `rdbms_extension`.
 
-## Transaction behavior v0
+## 11. Android boundary
 
-Stage 6 не добавляет новый on-disk record layout. Он использует существующие:
+`rdbms_android` собирается как native library и экспортирует JNI-shaped symbols:
 
 ```text
-database file v0;
-page format v1;
-WAL record v0;
-catalog page v0;
-heap table v0.
+Java_dev_rdbms_NativeSmoke_stage
+Java_dev_rdbms_NativeSmoke_abiVersion
+Java_dev_rdbms_NativeSmoke_add
 ```
 
-Transaction commit v0 — это порядок записи, а не новый физический формат:
+Эти функции не читают базу и не исполняют SQL. Они только проверяют форму native boundary.
 
-```text
-BeginTx(tx_id)
-PageImage(tx_id, catalog/heap page)
-...
-CommitTx(tx_id)
-```
+## 12. Что ещё не стабилизировано
 
-После sync WAL dirty pages записываются в database file. Recovery v0 уже умеет применить эти committed `PageImage` records.
+Не стабилизированы:
 
-Rollback v0 использует no-steal staging: uncommitted pages не пишутся в database file. Поэтому physical undo format пока не нужен.
+- совместимость файлов между версиями;
+- database header;
+- WAL file header;
+- checkpoint format;
+- pageLSN redo skip;
+- SQL schema constraints;
+- index rebuild protocol;
+- dynamic extension ABI loading;
+- формат backup/export.
 
-Rollback v0 uses no-steal staging: staged pages are dropped before they ever become database-file bytes.
-
-## Index node page v0
-
-Stage 8 adds `PageType::Index`.
-
-Index pages are normal slotted pages. Slot 0 stores one encoded B+Tree node record.
-
-```text
-magic       4 bytes   "RDBI"
-version     u16       1
-node_kind   u8        1 = leaf, 2 = internal
-```
-
-Leaf payload:
-
-```text
-has_next    u8
-next_page   u64
-entry_count u16
-entries:
-  key
-  row_page  u64
-  row_slot  u16
-```
-
-Internal payload:
-
-```text
-key_count   u16
-keys        repeated encoded keys
-child_count u16
-children    repeated u64 page ids
-```
-
-Supported key encodings:
-
-```text
-1 = i64 integer key
-2 = UTF-8 text key
-```
-
-The format is versioned separately from the page header. Stage 8 does not define range-scan cursors, delete records or uniqueness metadata.
-
-## Extension catalog metadata v0
-
-Stage 9 extends the catalog record with an optional extension metadata suffix. Older catalog records without this suffix are still decoded as having zero installed extensions.
-
-After relation entries, new catalog records append:
-
-```text
-extension_count: u32
-extensions: repeated extension entry
-```
-
-Extension entry v0:
-
-```text
-name: string16
-abi_version: u32
-kind: string16
-```
-
-For the built-in Stage 9 path the only supported kind is:
-
-```text
-static
-```
-
-The catalog format version remains `1` because the decoder accepts both the Stage 8 record without extension metadata and the Stage 9 record with the optional suffix.
+До отдельного compatibility milestone любые эти форматы можно менять патчами.

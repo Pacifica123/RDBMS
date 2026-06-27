@@ -1,116 +1,107 @@
-# Recovery
+# Восстановление после сбоя
 
 ## 1. Цель
 
-Recovery отвечает на один вопрос: какое состояние базы допустимо после падения процесса или ОС.
+Recovery нужно, чтобы после reopen база увидела committed данные и не увидела uncommitted данные.
 
-Для текущего MVP применяется простая модель:
+Минимальные правила:
 
 ```text
-committed changes survive;
-uncommitted changes do not become visible through recovery;
-corrupted WAL/page bytes are detected, not silently accepted.
+committed изменения восстанавливаются;
+uncommitted изменения не становятся видимыми;
+повреждённый WAL или page bytes дают ошибку, а не тихую порчу.
 ```
 
-## 2. Stage 4 recovery loop
+## 2. Текущий recovery loop
 
-Stage 4 добавляет `rdbms_recovery` — первый redo-only loop, который связывает `rdbms_vfs` и `rdbms_wal`.
+`rdbms_recovery::open_database` связывает VFS, data file и WAL file.
 
-Текущий open path:
+Порядок работы:
 
 ```text
 1. открыть data file через VFS;
 2. открыть WAL file через VFS;
-3. просканировать WAL с offset 0;
-4. проверить WAL magic/version/checksum/length/LSN;
-5. выбрать PageImage records только для транзакций с CommitTx и без AbortTx;
-6. проверить каждую page image через Page::from_bytes;
-7. записать committed full-page image в PageFile;
-8. sync data file;
-9. вернуть RecoveredDatabase с PageFile и RecoveryReport.
+3. прочитать WAL с offset 0;
+4. проверить WAL envelope/checksum/LSN;
+5. найти committed tx_id;
+6. применить PageImage только для committed tx_id;
+7. вернуть PageFile для дальнейшего открытия CatalogStore/TransactionalStore.
 ```
 
-Публичная граница Stage 4:
+Это redo-only recovery. Оно не делает undo, не строит MVCC snapshot и не выполняет логическую перестройку таблиц.
+
+## 3. Почему full-page image
+
+WAL v0 пишет полный образ страницы. Поэтому redo простое:
 
 ```text
-DatabasePaths;
-RecoveryReport;
-RecoveredDatabase<F: VfsFile>;
-open_database(vfs, paths);
-recover_page_file(page_file, wal_file).
+если tx committed → записать этот page image в data file
 ```
 
-## 3. Идемпотентность
+Такой подход проще проверить. Минус — большой WAL и отсутствие оптимизаций.
 
-Recovery можно запускать несколько раз подряд. В WAL v0 redo работает через full-page image. Поэтому повторная запись того же committed image должна оставлять тот же page state.
+## 4. Идемпотентность
 
-Текущий тест проверяет повторный `open_database` на одном и том же WAL и data file.
+Recovery можно запускать повторно. Повторная запись того же committed page image должна оставлять тот же page state.
 
-## 4. Что считается committed
-
-Stage 4 использует правило из `rdbms_wal::redo_committed_page_images`:
+Это важно для сценария:
 
 ```text
-PageImage применяется, если tx_id имеет CommitTx и не имеет AbortTx.
-PageImage игнорируется, если tx_id не имеет CommitTx.
-PageImage игнорируется, если tx_id имеет AbortTx.
+open database → recovery → process dies → open database again → recovery again
 ```
 
-Это ещё не полноценная transaction visibility model. Это только минимальная граница, чтобы uncommitted WAL records не попадали в data file при recovery.
+## 5. Связь с transactions v0
 
-## 5. Текущие ограничения
-
-Сейчас нет:
+`rdbms_tx` делает изменения recoverable так:
 
 ```text
-undo;
-ARIES;
-checkpoint state;
-recovery start position;
-page_lsn-based skip;
-WAL truncation после checkpoint;
-fault-injection VFS;
-file header bootstrap;
-MVCC snapshots.
+dirty catalog/heap/index pages живут в памяти;
+commit пишет их в WAL как PageImage records;
+commit пишет CommitTx;
+commit sync-ит WAL;
+только потом commit пишет страницы в data file.
 ```
 
-Stage 6 добавляет первый commit protocol для `rdbms_tx`: dirty catalog/heap pages сначала пишутся в WAL как full-page images, затем пишется `CommitTx`, затем sync WAL, и только после этого dirty pages попадают в data file. Это закрывает минимальный crash window для операций, прошедших через `TransactionalStore`, но не является полноценным ARIES.
+Если сбой произошёл после sync WAL, но до записи data file, recovery восстановит страницы из WAL.
 
-`page_lsn` уже есть в page header, но Stage 4 не обновляет и не использует его для пропуска redo. Это отдельный шаг после стабилизации commit protocol.
+Если сбой произошёл до `CommitTx`, recovery проигнорирует эти page images.
 
-## 6. Crash testing
+## 6. Индексы и recovery
 
-Тесты отказов должны использовать fault-injection VFS, а не ручное выключение компьютера. Минимальная будущая модель: VFS умеет оборвать write, потерять suffix, вернуть short write или ошибку sync.
-
-Stage 4 пока проверяет только обычный reopen/recovery path, WAL corruption propagation и идемпотентность повторного recovery.
-
-## 7. Граница с транзакциями
-
-Полноценный undo/MVCC отложены. Но уже сейчас WAL records имеют `TxId`, commit marker и page image redo path, чтобы будущий transaction layer не приклеивался поверх storage вслепую.
-
-## 8. Связь с catalog/heap v0 и transactions v0
-
-Stage 5 хранит catalog page и heap pages как обычные `rdbms_page::Page` в database file.
-
-Stage 6 делает это recoverable для операций, выполненных через `rdbms_tx::TransactionalStore`:
+Для Этап 8/10 индекс не требует отдельного алгоритма восстановления. Index pages проходят через тот же путь:
 
 ```text
-create_table / insert_row меняют staged pages в памяти;
-commit пишет staged pages в WAL как committed PageImage records;
-recovery применяет эти PageImage records к data file;
-CatalogStore::open после recovery видит committed catalog и heap rows.
+B+Tree page → staged dirty page → WAL PageImage → recovery redo
 ```
 
-Прямые вызовы `CatalogStore::create_table` и `CatalogStore::insert_row` остаются низкоуровневыми и не добавляют WAL protocol сами по себе.
+После recovery catalog знает root page index relation, а index pages восстановлены как обычные committed pages.
 
-## Stage 8 — recovery of index pages
+Пока нет логического index rebuild. Если в будущем появятся операции, где heap и index можно чинить отдельно, понадобится отдельный protocol.
 
-Recovery does not need a special index algorithm yet. Index pages are restored through the same committed WAL `PageImage` redo path as catalog and heap pages.
+## 7. Ограничения
 
-```text
-PageType::Catalog -> redo full page image
-PageType::Heap    -> redo full page image
-PageType::Index   -> redo full page image
-```
+Пока нет:
 
-There is still no logical index rebuild during recovery.
+- undo;
+- MVCC visibility;
+- checkpoint state;
+- pageLSN skip;
+- WAL truncation;
+- fuzzy checkpoint;
+- crash matrix;
+- repair tool;
+- логического rebuild индексов.
+
+## 8. Что проверять дальше
+
+Нужны crash tests:
+
+- падение до `CommitTx`;
+- падение после `CommitTx`, но до data sync;
+- обрезанный WAL record;
+- повреждённый checksum;
+- повторный recovery;
+- сбой при index page split;
+- сбой между catalog update и index page write.
+
+Такие тесты должны идти через fault-injection VFS, а не через случайные sleep/kill.

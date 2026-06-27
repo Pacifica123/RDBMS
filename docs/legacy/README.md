@@ -1,27 +1,30 @@
-# Legacy: RDBMS-master
+# Исторический прототип RDBMS-master
 
-Этот каталог сохраняет ранний бакалаврский прототип. Он не является основой новой архитектуры.
+Этот каталог хранит ранний бакалаврский прототип. Он не является основой новой архитектуры.
 
-Статус старого проекта:
+Статус:
 
 ```text
-legacy / archived / not resurrectable as codebase
+legacy / archived / not used as current codebase
 ```
 
-Ценность:
+Что в нём полезно:
 
-- ранняя модель сущностей `Database`, `Table`, `Column`, `Row`, `Value`;
+- ранние сущности `Database`, `Table`, `Column`, `Row`, `Value`;
 - список желаемых SQL-команд;
 - первая попытка отделить логику от `main.rs`;
-- фиксация интереса к теме СУБД.
+- историческая фиксация интереса к теме СУБД.
 
-Причина отказа от прямого продолжения:
+Почему код не продолжается напрямую:
 
-- SQL-диспетчер построен раньше storage engine;
-- нет page format, WAL, recovery, catalog, transaction architecture;
-- JSON-снимок Rust-структуры не является форматом базы;
+- SQL dispatcher появился раньше storage engine;
+- нет page format;
+- нет WAL;
+- нет recovery;
+- нет catalog;
+- нет transaction architecture;
+- JSON snapshot Rust-структуры не является форматом базы;
 - `Vec<Table>` не даёт физического адреса строк;
-- ошибки и результаты исполнения не имеют надёжного API-контракта;
-- переносимость Android/Linux/Windows не выделена в VFS/IO-слой.
+- переносимость Linux/Windows/Android не выделена в отдельный IO layer.
 
-Старый backlog из `task.txt` можно читать только как историческую заметку, не как roadmap новой версии.
+Старый `task.txt` можно читать только как историческую заметку, не как roadmap новой версии.

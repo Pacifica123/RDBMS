@@ -1,116 +1,86 @@
-# Platform ports
+# Переносимость и платформенные проверки
 
-## 1. Stage 10 boundary
+## 1. Что добавил Этап 10
 
-Stage 10 is not a new storage feature. It is a portability smoke layer around the
-existing storage stack.
+Этап 10 не добавляет новую storage-фичу. Он проверяет, что текущий стек можно собирать и частично проверять на разных платформах.
 
-Implemented in this stage:
+Добавлено:
 
-```text
-Windows path/fsync smoke test in rdbms_vfs;
-Android cdylib/rlib crate;
-JNI-shaped smoke symbols;
-Android Java smoke wrapper;
-GitHub Actions CI matrix for Linux, Windows, macOS and Android library build.
-```
+- Windows path/sync smoke в `rdbms_vfs`;
+- Android native library crate `rdbms_android`;
+- JNI-shaped smoke symbols;
+- Java wrapper `NativeSmoke`;
+- CI matrix для Linux, Windows, macOS;
+- Android `aarch64-linux-android` library build в CI.
 
-Not implemented in this stage:
+Это не Android-приложение и не мобильный SQL API.
 
-```text
-Android app;
-Gradle project;
-instrumented Android emulator/device tests;
-Windows installer;
-platform-specific file locking;
-mobile storage policy;
-JNI query API for SQL execution.
-```
+## 2. Windows
 
-## 2. Windows path/fsync smoke
+VFS уже скрывает file IO за `rdbms_vfs::VfsFile`. Этап 10 добавляет smoke tests для путей и `sync_data`.
 
-The VFS already isolates random-access file IO behind `rdbms_vfs::VfsFile`. Stage
-10 adds a smoke test that creates a database file with spaces and non-ASCII text
-in the path, writes a page, calls `sync_data`, reopens the file and reads the
-page back.
+Проверяется:
 
-The Windows-only variant is guarded with `#[cfg(windows)]` and runs in the
-Windows CI job. A cross-platform variant runs on all platforms as a simpler path
-and sync smoke.
+- файл можно создать по обычному platform path;
+- random-access write/read работает;
+- `sync_data` проходит через VFS boundary;
+- Windows job в CI компилирует workspace.
 
-This does not prove all crash-consistency behavior on Windows. It only proves
-that the current `StdVfs` path handling, random-access IO and sync boundary are
-exercised on Windows.
+Это не доказывает полную crash-consistency на Windows. Для этого нужны отдельные crash tests и platform-specific fsync исследования.
 
-## 3. Android library crate
+## 3. Android crate
 
-Stage 10 adds:
+`crates/rdbms_android` собирается как:
 
 ```text
-crates/rdbms_android
+rlib
+cdylib
 ```
 
-The crate is built as both:
+`cdylib` — форма native library, которую можно загрузить через JNI.
 
-```text
-rlib;
-cdylib.
-```
-
-The `cdylib` output is the native library shape expected by Android JNI loading.
-The crate links against `rdbms_core` and `rdbms_sql`, so the Android target checks
-more than an empty Rust library.
+Crate линкуется с `rdbms_core` и `rdbms_sql`, поэтому Android build проверяет, что верхняя часть Rust stack компилируется под Android target.
 
 ## 4. JNI smoke
 
-The exported JNI-shaped symbols are:
+Экспортированные функции:
 
 ```text
-Java_dev_rdbms_NativeSmoke_stage
-Java_dev_rdbms_NativeSmoke_abiVersion
-Java_dev_rdbms_NativeSmoke_add
+Java_dev_rdbms_NativeSmoke_stage()      -> 10
+Java_dev_rdbms_NativeSmoke_abiVersion() -> 1
+Java_dev_rdbms_NativeSmoke_add(20, 22)  -> 42
 ```
 
-The corresponding Java wrapper is:
+Java wrapper:
 
 ```text
 platform/android/app/src/main/java/dev/rdbms/NativeSmoke.java
 ```
 
-The native functions only return small integers. They do not dereference JNI
-pointers. The Android crate is a narrow FFI-boundary exception to the default
-workspace unsafe-code lint because exported native symbols are part of that
-boundary; it still does not add arbitrary unsafe blocks.
+Rust функции не dereference-ят JNI pointers. Они принимают их как opaque handles и возвращают маленькие значения. Это узкая FFI-boundary проверка, не полноценная интеграция.
 
 ## 5. CI matrix
 
-The Stage 10 workflow is:
-
-```text
-.github/workflows/ci.yml
-```
-
-It runs the Rust workspace on:
-
-```text
-ubuntu-latest;
-windows-latest;
-macos-latest.
-```
-
-It also has an Android job that installs the Android target and NDK, then runs:
+Обычный workflow проверяет:
 
 ```bash
-cargo build -p rdbms_android --target aarch64-linux-android --release
-cargo test -p rdbms_android
+cargo check --workspace
+cargo test --workspace
 ```
 
-The Android job builds the native library. It does not run it on an Android
-emulator.
+на Linux/macOS/Windows.
 
-## 6. Current portability contract
+Android job устанавливает target и NDK, затем собирает native library для:
 
-The project now treats portability as a first-class boundary:
+```text
+aarch64-linux-android
+```
+
+Android job не запускает приложение на emulator/device.
+
+## 6. Текущий portability contract
+
+Граница такая:
 
 ```text
 storage code -> VFS -> platform file API
@@ -118,5 +88,29 @@ SQL/core code -> Rust library API -> Android JNI smoke crate
 CI -> Linux/Windows/macOS/Android build coverage
 ```
 
-Any future platform-specific storage behavior should stay behind `rdbms_vfs` or a
-similarly narrow crate boundary.
+Будущее platform-specific поведение должно оставаться за `rdbms_vfs` или отдельным platform crate. Storage, catalog, tx и SQL не должны напрямую разрастаться `cfg(windows)`/`cfg(android)` ветками без причины.
+
+## 7. Чего ещё нет
+
+Пока нет:
+
+- Android Gradle project;
+- Android instrumentation tests;
+- SQL API через JNI;
+- mobile storage directory policy;
+- file locking;
+- platform crash matrix;
+- packaging/release native library;
+- iOS target.
+
+## 8. Следующие шаги
+
+Разумный порядок:
+
+```text
+1. добавить больше VFS tests для platform paths;
+2. сделать fault-injection VFS;
+3. добавить Android host-side API только после стабилизации SQL/session API;
+4. добавить emulator/device smoke;
+5. отдельно исследовать fsync/file-locking semantics для каждой platform.
+```

@@ -1,141 +1,195 @@
-# Index v0
+# Индекс B+дерево v0
 
-Stage 8 добавляет первый persistent index layer.
+## 1. Зачем нужен индекс
 
-Индекс v0 — это B+Tree поверх уже существующих страниц. Он не является отдельным файлом: index pages лежат в том же database file, что catalog и heap pages.
+Без индекса запрос вида:
 
-```text
-catalog page 0
-  |
-  +-- table users
-  |     heap pages = [1, 2, ...]
-  |
-  +-- index users_id_idx
-        table_id = users
-        column = id
-        root_page_id = N
-
-index root page N
-  |
-  +-- internal/leaf B+Tree nodes
+```sql
+SELECT name FROM users WHERE id = 10;
 ```
 
-## Что реализовано
+должен просканировать все строки таблицы. Индекс хранит отдельную структуру:
 
 ```text
-rdbms_index crate;
-PageType::Index;
-B+Tree node format v0;
-leaf pages with (key, RowId) entries;
-internal pages with separator keys and child page ids;
-leaf split;
-internal split;
-root split;
-equality lookup;
-INT and TEXT keys;
-CREATE INDEX name ON table(column);
-INSERT maintenance for existing indexes;
-SELECT ... WHERE indexed_column = literal uses the index when possible.
+key -> RowId
 ```
 
-## Что не реализовано
+Тогда executor может быстро найти физические адреса строк, где `key = 10`, и прочитать только эти строки.
+
+## 2. Что реализовано
+
+`rdbms_index` реализует маленькое B+Tree:
+
+- leaf и internal nodes;
+- ordered keys;
+- insert `(key, RowId)`;
+- split leaf/internal nodes;
+- root split;
+- linked leaves через `next_leaf`;
+- equality lookup;
+- хранение node record внутри `PageType::Index` страницы.
+
+Поддержанные key types:
 
 ```text
-unique indexes;
-range scans;
-delete from index;
-UPDATE/DELETE SQL;
-composite keys;
-DOUBLE indexes;
-NULL index entries;
-index-only scans;
-planner cost model;
-background index build;
-concurrent index build;
-MVCC visibility checks in index entries.
+INT / INTEGER -> IndexKey::Integer
+TEXT          -> IndexKey::Text
 ```
 
-## Physical format
+## 3. Что такое B+Tree простыми словами
 
-Index node payload is stored as one record in slot 0 of a `PageType::Index` page.
+B+Tree — это дерево, где:
+
+- internal pages помогают выбрать путь вниз;
+- leaf pages хранят реальные `(key, RowId)` пары;
+- все leaf pages находятся на одном уровне;
+- leaf pages связаны между собой ссылкой на следующую leaf page.
+
+Пример:
 
 ```text
-magic        = "RDBI"
-version      = 1
-node_kind    = leaf | internal
-payload      = node-specific bytes
+          [10 | 20]
+         /    |    \
+ [1,5,7] [10,15] [20,25,30]
 ```
 
-Leaf node:
+Если ищем `15`, идём через root в среднюю leaf page и читаем entries с ключом `15`.
+
+## 4. Почему это B+Tree, а не обычное B-Tree
+
+В B+Tree реальные row pointers лежат только в leaves. Internal nodes хранят separator keys и child page ids.
+
+Это удобно для базы данных:
+
+- leaves можно связать между собой для будущих range scans;
+- internal pages остаются компактнее;
+- lookup всегда заканчивается в leaf page;
+- index entry хранит физический `RowId`.
+
+Range scans пока не реализованы, но `next_leaf` уже есть.
+
+## 5. Физический формат
+
+Каждая index page — обычная страница `rdbms_page::Page` с типом `PageType::Index`.
+
+В slot 0 лежит один encoded B+Tree node:
 
 ```text
-next_leaf flag
-next_leaf page id
-entry count
-repeated entries:
-  key
-  row page id
-  row slot id
+magic = RDBI
+version = 1
+node_kind = leaf/internal
+payload
 ```
 
-Internal node:
+Leaf payload:
 
 ```text
-key count
-separator keys
-child count
-child page ids
+next_leaf: Option<PageId>
+entries: [(IndexKey, RowId), ...]
 ```
 
-The current implementation uses small `MAX_KEYS` to force splits in unit tests. This is intentional for Stage 8 and not a performance target.
+Internal payload:
 
-## Catalog integration
+```text
+keys: [IndexKey, ...]
+children: [PageId, ...]
+```
 
-Catalog now has index relations:
+## 6. Insert
+
+Вставка идёт сверху вниз:
+
+```text
+1. найти leaf page для key;
+2. вставить `(key, RowId)` в отсортированное место;
+3. если page переполнена — split;
+4. поднять separator key родителю;
+5. если root split-ится — создать новый root.
+```
+
+`MAX_KEYS` сейчас маленький специально, чтобы тесты быстро проверяли split. Это не настройка производительности.
+
+## 7. Lookup
+
+Equality lookup:
+
+```text
+1. от root пройти к leaf page;
+2. читать entries в leaf;
+3. собрать все RowId, где key равен искомому;
+4. при необходимости перейти в next_leaf;
+5. остановиться, когда ключи стали больше искомого или leaf закончились.
+```
+
+Lookup возвращает `Vec<RowId>`.
+
+## 8. Catalog integration
+
+Index relation хранится в catalog:
 
 ```text
 RelationKind::Index
-StorageObject::BPlusTree
+StorageObject::BPlusTree {
+  table_id,
+  column_name,
+  root_page_id
+}
 ```
 
-Index storage metadata contains:
+Если root split-ится, новый `root_page_id` обновляется в catalog в той же transaction.
+
+## 9. Transaction integration
+
+Index pages проходят через общий dirty-page staging:
 
 ```text
-table_id
-column_name
-root_page_id
+index page changed -> dirty_pages -> WAL PageImage -> CommitTx -> sync WAL -> data file
 ```
 
-When the B+Tree root splits, catalog root metadata is updated in the same transaction.
+Rollback выбрасывает staged index pages вместе с catalog/heap pages.
 
-## Transaction integration
+## 10. SQL integration
 
-Index pages are staged through the same transaction dirty-page map as catalog and heap pages.
-
-Commit still follows the Stage 6 rule:
-
-```text
-write WAL PageImage records
-write CommitTx
-sync WAL
-write data pages
-sync data file
-```
-
-Rollback drops staged index pages together with other dirty pages.
-
-## SQL integration
-
-Supported syntax:
+SQL-команда:
 
 ```sql
 CREATE INDEX users_id_idx ON users(id);
 ```
 
-Supported indexed lookup:
+создаёт index relation и строит B+Tree по существующим строкам.
+
+После этого запрос:
 
 ```sql
-SELECT name FROM users WHERE id = 2;
+SELECT name FROM users WHERE id = 1;
 ```
 
-The SQL executor still applies the WHERE predicate after reading candidate rows. This keeps the result correct even if the index path is not used or if a future stale-entry case appears.
+может использовать index lookup, если predicate подходит под `column = literal` и тип literal можно превратить в `IndexKey`.
+
+## 11. Ограничения
+
+Пока нет:
+
+- delete из индекса;
+- unique index;
+- range scan в SQL;
+- composite keys;
+- NULL entries;
+- index-only scan;
+- background/concurrent build;
+- MVCC visibility;
+- page fill factor;
+- rebalancing/merge после delete;
+- logical rebuild during recovery.
+
+## 12. Что проверять дальше
+
+Нужны тесты:
+
+- много duplicate keys;
+- split root;
+- split internal pages;
+- lookup через несколько linked leaves;
+- recovery после split;
+- insert в таблицу с несколькими indexes;
+- fallback на full scan, если index не подходит.

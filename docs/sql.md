@@ -1,253 +1,138 @@
-# SQL subset v0
+# Подмножество SQL v0
 
-## 1. Назначение
+## 1. Назначение SQL layer
 
-Stage 7 добавляет первый SQL-facing слой поверх `rdbms_tx::TransactionalStore`.
+`rdbms_sql` — маленький SQL-facing слой поверх `rdbms_tx::TransactionalStore`. Он нужен, чтобы проверять стек хранения через понятный интерфейс.
 
-Это не полный SQL engine. Цель этапа — связать уже готовые catalog/heap/transaction primitives с маленьким пользовательским языком и зафиксировать минимальную границу parser/executor.
+Это не полноценный SQL parser, binder, planner или optimizer.
 
-Поддерживаемый поток:
+## 2. Поддержанные команды
 
-```text
-SQL text
-  -> lexer/parser
-  -> Statement AST
-  -> direct executor
-  -> TransactionalStore autocommit
-  -> catalog/heap pages
-  -> WAL-backed commit
-```
-
-## 2. Новый активный слой
-
-Crate:
-
-```text
-rdbms_sql
-```
-
-Главные API:
-
-```text
-parse_statement(sql) -> Statement
-execute(store, sql, params) -> ExecResult
-SqlSession::execute(sql, params) -> ExecResult
-encode_row(values) -> Vec<u8>
-decode_row(bytes) -> Vec<Value>
-```
-
-`params` пока должны быть пустыми. Параметры относятся к будущему binder/executor этапу.
-
-## 3. Поддерживаемые statements
-
-Stage 7 поддерживает только одну SQL statement за вызов:
+Текущий subset:
 
 ```sql
-CREATE TABLE users (id INT, name TEXT);
-INSERT INTO users VALUES (1, 'Ada');
-SELECT * FROM users;
-SELECT name FROM users WHERE id = 1;
+CREATE TABLE name (column TYPE, ...);
+INSERT INTO name VALUES (literal, ...);
+CREATE INDEX index_name ON table_name(column_name);
+LOAD EXTENSION stdlib;
+SELECT function(literal, ...);
+SELECT * FROM table_name;
+SELECT column, ... FROM table_name;
+SELECT * FROM table_name WHERE column = literal;
+SELECT column, ... FROM table_name WHERE column = literal;
 ```
 
-Поддержано:
-
-```text
-CREATE TABLE name (column TYPE, ...)
-INSERT INTO name VALUES (literal, ...)
-SELECT * FROM name
-SELECT column, ... FROM name
-SELECT ... FROM name WHERE column = literal
-```
-
-Не поддержано:
-
-```text
-SQL BEGIN/COMMIT/ROLLBACK;
-INSERT column list;
-UPDATE;
-DELETE;
-JOIN;
-ORDER BY;
-GROUP BY;
-aggregates;
-expressions;
-prepared statements;
-quoted identifiers;
-multiple statements in one execute call.
-```
-
-## 4. Идентификаторы и типы
-
-Идентификаторы Stage 7 простые:
-
-```text
-[A-Za-z_][A-Za-z0-9_]*
-```
-
-Parser нормализует имена таблиц и колонок в lower-case. Quoted identifiers пока отсутствуют.
-
-Поддерживаемые SQL-типы:
-
-```text
-INT
-INTEGER
-TEXT
-DOUBLE
-REAL
-FLOAT
-```
-
-Типы в catalog сохраняются в upper-case.
-
-## 5. Литералы
-
-Поддерживаемые literals:
+Поддержанные literals:
 
 ```text
 NULL
-123
--123
-1.5
-'text'
+integer
+text string
+float/double
 ```
 
-В строковых литералах одинарная кавычка экранируется удвоением:
-
-```sql
-INSERT INTO quotes VALUES ('it''s ok');
-```
-
-## 6. SQL row encoding v0
-
-Heap table v0 по-прежнему хранит raw row bytes. Stage 7 вводит SQL row payload v0 внутри этих raw bytes.
-
-SQL row v0:
-
-```text
-offset  size      field
-0       4         magic = "RDBR"
-4       2         version = 1
-6       2         value_count
-8       variable  values
-```
-
-Value entry:
-
-```text
-tag = 0  NULL, no payload
-tag = 1  INTEGER, i64 little-endian
-tag = 2  TEXT, u32 byte_len + UTF-8 bytes
-tag = 3  DOUBLE, f64 little-endian
-```
-
-SQL executor проверяет, что число значений совпадает с числом колонок в catalog.
-
-## 7. Execution model
-
-`CREATE TABLE` выполняется через:
-
-```text
-TransactionalStore::create_table_autocommit
-```
-
-`INSERT` выполняется через:
-
-```text
-coerce literals to catalog column types;
-encode SQL row v0;
-TransactionalStore::insert_row_autocommit.
-```
-
-`SELECT` выполняется через:
-
-```text
-lookup relation in committed catalog;
-full_scan(relation_id);
-decode SQL row v0;
-optional equality WHERE;
-projection;
-materialized ExecResult::Query.
-```
-
-Это прямой executor. Отдельного logical plan, optimizer и physical operator tree пока нет.
-
-## 8. Связь с транзакциями
-
-Stage 7 сам не добавляет новый transaction manager. Все write statements идут через Stage 6 autocommit helpers. Поэтому `CREATE TABLE` и `INSERT`, выполненные через SQL API, получают тот же WAL-backed commit порядок:
-
-```text
-PageImage records;
-CommitTx;
-WAL sync;
-data page writes;
-data sync.
-```
-
-SQL-level explicit transaction statements пока отсутствуют.
-
-## 9. Ограничения
-
-Stage 7 не умеет читать arbitrary raw heap rows, созданные прямым `CatalogStore::insert_row`. SQL `SELECT` ожидает SQL row v0 bytes с magic `RDBR`.
-
-Текущий `WHERE` — только equality predicate вида:
-
-```sql
-WHERE column = literal
-```
-
-Без boolean expressions, comparison operators, indexes и NULL-semantics уровня SQL standard.
-
-## Stage 8 — CREATE INDEX
-
-Supported syntax:
-
-```sql
-CREATE INDEX index_name ON table_name(column_name);
-```
-
-Supported indexable column types:
+Поддержанные типы в `CREATE TABLE` пока ограничены тем, что умеет SQL row encoding:
 
 ```text
 INT / INTEGER
 TEXT
+DOUBLE / FLOAT / REAL
 ```
 
-`DOUBLE`, `REAL`, `FLOAT` and composite keys are intentionally not indexable in Stage 8.
-
-When a table has an index on the column used by a simple equality predicate, the executor asks `rdbms_tx` for an index lookup:
+## 3. Пример
 
 ```sql
+CREATE TABLE users (id INT, name TEXT, score DOUBLE);
+INSERT INTO users VALUES (1, 'Ada', 10.5);
+INSERT INTO users VALUES (2, 'Grace', 20.0);
+SELECT name, score FROM users WHERE id = 2;
+```
+
+Ожидаемый результат — materialized rows с колонками `name`, `score`.
+
+## 4. Индексированный путь
+
+Если есть индекс по колонке из `WHERE column = literal`, executor может использовать B+Tree lookup:
+
+```sql
+CREATE INDEX users_id_idx ON users(id);
 SELECT name FROM users WHERE id = 1;
 ```
 
-The executor still validates the row through the normal heap row decode path and applies the predicate again. This keeps the result path simple and correct.
+Даже если index path найден, executor всё равно проверяет predicate после чтения candidate rows. Это защитное правило: результат остаётся корректным, даже если в будущем появятся stale entries или fallback path.
 
-## Stage 9 — extension scalar functions
+## 5. Расширения
 
-Stage 9 adds two SQL forms:
+Static extension загружается так:
 
 ```sql
 LOAD EXTENSION stdlib;
 SELECT upper('ada');
-```
-
-`LOAD EXTENSION` currently accepts only built-in static extensions known to the process. It validates the extension ABI version and persists extension metadata in the catalog through the transaction layer.
-
-Supported scalar calls in Stage 9 have no `FROM` clause and accept literal arguments only:
-
-```sql
 SELECT length('abc');
-SELECT lower('ADA');
-SELECT upper('ada');
-SELECT abs(-5);
-SELECT typeof(1.5);
-SELECT rdbms_version();
 ```
 
-Column expressions are not supported yet:
+`stdlib` сейчас встроен в бинарь. Dynamic plugin loading отсутствует.
 
-```sql
-SELECT upper(name) FROM users;
+После `LOAD EXTENSION` metadata сохраняется в catalog, поэтому при reopen registry можно восстановить из catalog extension list.
+
+## 6. Parser
+
+Parser намеренно простой:
+
+- принимает один statement;
+- требует, чтобы после statement не оставалось мусора;
+- не поддерживает quoted identifiers;
+- не поддерживает параметры;
+- не поддерживает выражения, кроме literal arguments в scalar function call;
+- не строит полноценное дерево операторов.
+
+## 7. Executor
+
+Executor напрямую вызывает `TransactionalStore`:
+
+```text
+CREATE TABLE  -> create_table_autocommit
+INSERT        -> insert_row_autocommit + index maintenance
+CREATE INDEX  -> create_index_autocommit
+LOAD EXTENSION -> load_extension_autocommit
+SELECT        -> full scan или equality index lookup
+SELECT func   -> static extension registry call
 ```
 
-That belongs to a later binder/planner/expression stage.
+Результат возвращается как `ExecResult`.
+
+## 8. Чего нет
+
+Пока нет:
+
+- `BEGIN`, `COMMIT`, `ROLLBACK` в SQL;
+- `UPDATE`, `DELETE`, `DROP TABLE`;
+- `ALTER TABLE`;
+- `JOIN`;
+- `ORDER BY`, `GROUP BY`, aggregate functions;
+- prepared statements;
+- positional parameters;
+- type coercion;
+- constraints;
+- primary key / unique;
+- NULL semantics как в SQL standard;
+- query optimizer;
+- cost model;
+- server protocol.
+
+## 9. Как расширять дальше
+
+Безопасный порядок развития:
+
+```text
+1. отделить parser AST от binder output;
+2. добавить schema/type checking;
+3. добавить prepared statements и params;
+4. добавить logical plan;
+5. добавить physical executor nodes;
+6. добавить UPDATE/DELETE;
+7. добавить SQL-visible transactions;
+8. добавить optimizer только после стабильных operators.
+```
+
+Не стоит сразу писать большой SQL parser. В этом проекте storage correctness важнее ширины синтаксиса.
