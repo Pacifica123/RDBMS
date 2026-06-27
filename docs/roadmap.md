@@ -16,6 +16,8 @@
 
 Проект всё ещё находится в учебно-инженерной стадии. Следующие этапы должны усиливать корректность, тестирование и понятность API, а не резко расширять SQL.
 
+После MVP-клиента добавлен более точный версионный план: `docs/development/client_research_version_plan.md`. Он уточняет, что перед checkpoint и performance-работой нужно закрыть WAL/tx/recovery safety baseline: transaction identity после reopen, safe open path и crash assumptions.
+
 ## Stage 0 — architecture-first reboot
 
 Статус: сделано.

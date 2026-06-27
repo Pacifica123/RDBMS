@@ -1,16 +1,16 @@
 {
   "formatVersion": 1,
-  "patchId": "p000002-short-slug-v0-10-0-2",
+  "patchId": "p000003-short-slug-v0-10-0-3",
   "title": "Краткое название изменения",
   "summary": "Что меняется и зачем.",
   "kind": "development-step",
   "createdAt": "2026-06-27T00:00:00Z",
   "version": {
     "schema": "devctl-version-intent-v1",
-    "base": "0.10.0.1",
-    "next": "0.10.0.2",
+    "base": "0.10.0.2",
+    "next": "0.10.0.3",
     "bump": "quantum",
-    "quantum": 2,
+    "quantum": 3,
     "reason": "Обычный совместимый devctl-патч после включения версионирования.",
     "publicSurface": [
       "docs"
@@ -55,14 +55,14 @@
     }
   ],
   "commit": {
-    "message": "scope: concise change summary v0.10.0.2\n\nVersion-Before: 0.10.0.1\nVersion-After: 0.10.0.2\nVersion-Bump: quantum\nPatch-Quantum: 2"
+    "message": "scope: concise change summary v0.10.0.3\n\nVersion-Before: 0.10.0.2\nVersion-After: 0.10.0.3\nVersion-Bump: quantum\nPatch-Quantum: 3"
   },
   "push": {
     "remote": "origin",
     "branch": "master"
   },
   "archive": {
-    "nameSlug": "short-slug-v0-10-0-2",
+    "nameSlug": "short-slug-v0-10-0-3",
     "exclude": [
       ".git/",
       "target/",

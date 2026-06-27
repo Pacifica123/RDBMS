@@ -1,15 +1,14 @@
 {
   "schema": "devctl-version-v1",
-  "version": "0.10.0.1",
+  "version": "0.10.0.2",
   "semver": "0.10.0",
   "major": 0,
   "minor": 10,
   "micro": 0,
-  "quantum": 1,
+  "quantum": 2,
   "released": false,
   "updatedAt": "2026-06-27T00:00:00Z",
-  "lastPatchId": "p000001-versioning-bootstrap-v0-10-0-1",
+  "lastPatchId": "p000002-client-research-version-plan-v0-10-0-2",
   "lastPatchSha256": null,
-  "bootstrap": true,
-  "notes": "Первый квант после введения devctl patch-quantum versioning. Предыдущие devctl-патчи считаются pre-versioning history и не получают задним числом quantum-номера."
+  "notes": "Документационный квант: добавлен вердикт по MVP-клиенту и версионный план ядра после анализа WAL/tx/recovery/write path."
 }

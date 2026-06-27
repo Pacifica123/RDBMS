@@ -16,6 +16,27 @@ vMAJOR.MINOR.MICRO+devctl.QUANTUM
 
 `QUANTUM` — сквозной номер успешно применённого devctl-патча после введения этой системы. Он не сбрасывается при изменении `MAJOR`, `MINOR` или `MICRO`.
 
+## 0.10.0.2 — p000002-client-research-version-plan-v0-10-0-2
+
+Дата: 2026-06-27.
+
+Тип изменения: документация и планирование, compatible.
+
+Что изменилось:
+
+- добавлен документ `docs/development/client_research_version_plan.md`;
+- в документ встроен вердикт по MVP-клиенту и теоретическая проверка гипотез по коду ядра;
+- зафиксирован риск `TxId` reuse после reopen при append-only WAL и recovery grouping по `TxId`;
+- уточнён ближайший порядок развития: safety baseline → metrics → checkpoint/WAL compaction → SQL transactions/batching → heap free-space → EXPLAIN/index confidence → crash hardening → client introspection;
+- `docs/roadmap.md`, `docs/development/README.md` и `README.md` получили ссылку на новый версионный план;
+- `.devctl/templates/patch_manifest.template.json` переведён на следующую базу `0.10.0.2 -> 0.10.0.3`.
+
+Ограничения:
+
+- этот патч не меняет код ядра;
+- `cargo check --workspace` должен выполняться в нормальной Rust-среде, но сам документ не зависит от компиляции;
+- номера будущих квантов в плане являются ориентировочными и должны сдвигаться, если появятся промежуточные devctl-патчи.
+
 ## 0.10.0.1 — p000001-versioning-bootstrap-v0-10-0-1
 
 Дата: 2026-06-27.

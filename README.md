@@ -9,7 +9,7 @@ RDBMS — учебно-инженерная СУБД на Rust. Проект с�
 Текущая версия проекта после введения devctl patch-quantum versioning:
 
 ```text
-0.10.0.1
+0.10.0.2
 ```
 
 `0.10.0` отражает состояние после Этапа 10. Последний разряд `1` — первый успешный devctl-квант после включения версионирования. Источник истины: `VERSION`, `VERSION.json` и `CHANGELOG.md`. Правила описаны в `docs/development/versioning.md`.
@@ -97,8 +97,9 @@ SQL shell не является первым доказательством СУ
 9. `docs/platform.md` — Windows/Android/CI boundary.
 10. `docs/roadmap.md` — что уже сделано и что дальше.
 11. `docs/non_goals.md` — что проект сознательно не обещает.
-12. `docs/development/versioning.md` — как читать и bump-ать версию.
-13. `docs/development/devctl_patches.md` — как готовить патчи.
+12. `docs/development/client_research_version_plan.md` — вердикт после MVP-клиента и план версий ядра.
+13. `docs/development/versioning.md` — как читать и bump-ать версию.
+14. `docs/development/devctl_patches.md` — как готовить патчи.
 
 ## Проверки
 
